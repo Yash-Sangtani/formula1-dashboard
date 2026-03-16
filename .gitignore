@@ -1,5 +1,21 @@
+# Python
 __pycache__/
 *.pyc
 *.pyo
 .fastf1_cache/
 .env
+
+# Next.js
+.next/
+out/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Environment
+.env*.local
+.env.production
+
+# Vercel
+.vercel
