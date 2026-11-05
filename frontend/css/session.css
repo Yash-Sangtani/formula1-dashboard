@@ -23,11 +23,12 @@ body[data-kind=practice] .hd-meeting::after, body[data-kind=qualifying] .hd-meet
 [data-kind=practice][data-view=race].noside #grid, [data-kind=qualifying][data-view=race].noside #grid, [data-kind=sprint_qualifying][data-view=race].noside #grid { grid-template-columns: var(--twid) minmax(0, 1fr); }
 .tower.tm-timed .row { grid-template-columns: 26px 4px 44px 78px 66px 140px 60px 34px 64px; }
 .tower.tm-quali .row { grid-template-columns: 26px 4px 44px 78px 66px 182px 140px 60px 34px 64px; }
-.tm-timed .c-best { text-align: right; font-weight: 700; } .tm-timed .c-best.t-none { font-weight: 400; }
-.tm-timed .c-best.t-purple { color: var(--purple); }
-.tm-timed .c-gap.lead { color: var(--purple); font-size: .72rem; font-weight: 700; }
-.tm-timed .c-sec { font-size: .7rem; }
-.tm-timed .c-laps { text-align: center; color: var(--mut); font-size: .8rem; }
+.tower.tm-timed .c-best { display: block; text-align: right; font-weight: 700; } .tower.tm-timed .c-best.t-none { font-weight: 400; }
+.tower.tm-timed .c-best.t-purple { color: var(--purple); }
+.tower.tm-timed .c-gap { display: block; } .tower.tm-timed .c-sec { display: grid; } .tower.tm-timed .c-q { display: grid; } .tower.tm-timed .c-tyre { display: flex; } .tower.tm-timed .c-laps, .tower.tm-timed .c-act { display: block; }
+.tower.tm-timed .c-gap.lead { color: var(--purple); font-size: .72rem; font-weight: 700; }
+.tower.tm-timed .c-sec { font-size: .7rem; }
+.tower.tm-timed .c-laps { text-align: center; color: var(--mut); font-size: .8rem; }
 .c-q { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; text-align: center; font-size: .7rem; }
 .c-q i { font-style: normal; border-radius: 3px; padding: 1px 0; background: #1b1e26; color: var(--text); overflow: hidden; }
 .c-q i.na { color: var(--dim); } .c-q i.cur { background: rgba(255,212,0,.14); }
@@ -43,17 +44,20 @@ body[data-kind=practice] .hd-meeting::after, body[data-kind=qualifying] .hd-meet
 .tower .tw-body .row.danger.sel { background: color-mix(in srgb, var(--tc, var(--team)) 22%, #2a1215); }
 .cut-line { position: absolute; left: 0; right: 0; top: 0; height: 2px; background: var(--red); z-index: 2; pointer-events: none; transition: transform .45s cubic-bezier(.3,.8,.3,1); box-shadow: 0 0 6px var(--red); }
 .cut-line.ko { background: #777; box-shadow: none; }
-.cut-line span { position: absolute; right: 6px; top: -9px; font: 800 .55rem var(--sans); letter-spacing: .1em; background: var(--red); color: #fff; padding: 0 5px; border-radius: 2px; }
+.cut-line span { position: absolute; left: 2px; top: 1px; font: 800 .5rem/1.3 var(--sans); letter-spacing: .1em; background: var(--red); color: #fff; padding: 0 5px; border-radius: 2px; }
 .cut-line.ko span { background: #555; }
 .cut-line[hidden] { display: none; }
 @container (max-width: 700px) {
-  .tower.tm-timed .row { grid-template-columns: 24px 4px 42px 76px 62px 60px 34px 62px; }
-  .tower.tm-quali .row { grid-template-columns: 24px 4px 42px 76px 62px 60px 34px 62px; }
-  .tm-timed .c-sec, .tm-timed .c-q { display: none; }
+  .tower.tm-quali .row { grid-template-columns: 26px 4px 44px 78px 66px 140px 60px 34px 64px; }
+  .tower.tm-quali .c-q { display: none; }
+}
+@container (max-width: 560px) {
+  .tower.tm-timed .row, .tower.tm-quali .row { grid-template-columns: 24px 4px 42px 76px 62px 60px 34px 62px; }
+  .tower.tm-timed .c-sec { display: none; }
 }
 @container (max-width: 470px) {
   .tower.tm-timed .row, .tower.tm-quali .row { grid-template-columns: 24px 4px 40px 1fr 62px 60px; }
-  .tm-timed .c-tyre, .tm-timed .c-laps { display: none; }
+  .tower.tm-timed .c-tyre, .tower.tm-timed .c-laps { display: none; }
 }
 
 /* map: on-track toggle button state */
@@ -70,3 +74,14 @@ body[data-kind=practice] .hd-meeting::after, body[data-kind=qualifying] .hd-meet
 .dd-lapl tr.dd-sl td, .dd-lapl tr.dd-sl th { opacity: .7; }
 .dd-laplist { max-height: 300px; overflow: auto; }
 .dd-qs { font-size: .8rem !important; letter-spacing: 0; }
+
+/* analytics, timed sessions */
+.an-na[hidden] { display: none !important; }
+.an-na { display: block; padding: 40px 20px; text-align: center; line-height: 1.6; }
+.an-na b { display: block; font-size: 1.1em; margin-bottom: 6px; }
+.an-tab.an-na-tab { opacity: .45; }
+.an-tbl tr.an-ko { opacity: .5; }
+
+.tower .head .c-laps { font-size: inherit; color: inherit; }
+.an > *, .dd > * { flex-shrink: 0; }
+.tower .tw-empty { position: absolute; left: 0; right: 0; top: 60px; }

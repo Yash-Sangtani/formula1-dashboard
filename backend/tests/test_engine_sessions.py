@@ -489,3 +489,15 @@ def test_state_valid_json_with_nan_injected_directly():
     e.drivers["4"].tdf_text, e.drivers["4"].tdf_sec = "+1", float("inf")
     e.weather["AirTemp"] = "nan"
     json.dumps(e.state(), allow_nan=False)
+
+
+def test_timediff_alt_spelling_accepted():
+    from backend.engine import RaceEngine
+    from backend.ingest.messages import Msg
+    e = RaceEngine()
+    e.apply(Msg("DriverList", {"1": {"RacingNumber": "1", "Tla": "VER"}, "4": {"RacingNumber": "4", "Tla": "NOR"}}, 1.0))
+    e.apply(Msg("TimingData", {"Lines": {
+        "1": {"Position": "1", "BestLapTime": {"Value": "1:30.000"}, "TimeDiffToFastest": ""},
+        "4": {"Position": "2", "BestLapTime": {"Value": "1:30.250"}, "TimeDiffToFastest": "+0.250",
+              "TimeDifftoPositionAhead": "+0.250"}}}, 2.0))
+    assert e.state()["cars"]["4"]["intervalSec"] == 0.25

@@ -4,7 +4,7 @@ import {
   tyreColor, tyreLetter, indexHistory, teamStyles, raceBands, stintsFromLaps,
 } from '../charts.js';
 import { sessionOf } from '../session.js';
-import { activityOf, classifyLaps } from '../derive.js';
+import { activityOf, classifyLaps, runsFromLaps } from '../derive.js';
 
 const MAX_PIN = 4;
 const WINDOW_S = 20;
@@ -239,7 +239,7 @@ export function mount(el, store) {
       <td class="pu2">${rec ? esc(rec.text) : '–'}<small>${rec && st.cars[rec.num] ? esc(st.cars[rec.num].tla) : ''}</small></td><td class="dl">${c.last && isNum(c.last.sec) && c.best && isNum(c.best.sec) ? fmtDelta(c.last.sec - c.best.sec) : ''}</td></tr></tbody></table>`;
     // stints
     let stints = (c.stints || []).map((s) => ({ compound: s.compound, laps: s.laps, startLap: s.startLap, isNew: s.new }));
-    if (!stints.length) stints = stintsFromLaps(lapsOf(n)).map((s) => ({ compound: s.compound, laps: s.laps.length, startLap: s.start - 1 }));
+    if (!stints.length) stints = (timed ? runsFromLaps : stintsFromLaps)(lapsOf(n)).map((s) => ({ compound: s.compound, laps: s.laps.length, startLap: s.start - 1 }));
     const total = Math.max((st.lap && st.lap.current) || 0, c.lap || 0, stints.reduce((a, s) => Math.max(a, (s.startLap || 0) + (s.laps || 0)), 0), 1);
     R.stints.innerHTML = stints.length ? `<div class="dd-sbar">${stints.map((s, i) => `<div class="dd-seg" style="flex:${Math.max(s.laps || 0, 0.6)};background:${tyreColor(s.compound)}" title="${esc(s.compound)} stint ${i + 1}: ${s.laps} laps">${tyreLetter(s.compound)} ${s.laps ?? ''}</div>`).join('')}
       <div class="dd-seg dd-rest" style="flex:${Math.max(0, (st.lap && st.lap.total ? st.lap.total : total) - stints.reduce((a, s) => a + (s.laps || 0), 0))}"></div></div>` : '<div class="dd-none">No stint data yet</div>';
@@ -306,7 +306,7 @@ export function mount(el, store) {
     if (!single) return;
     const n = col.num, laps = lapsOf(n), st = store.state;
     const hh = hist(), ix = indexHistory(hh);
-    const stints = stintsFromLaps(laps);
+    const stints = (col.timed ? runsFromLaps : stintsFromLaps)(laps);
     const series = stints.map((s, i) => ({
       id: 'st' + i, label: `Stint ${i + 1} ${s.compound || ''}`, color: tyreColor(s.compound), markers: true, r: 2.4,
       points: s.laps.map((e) => [e.lap, isNum(e.sec) ? e.sec : null, e]),

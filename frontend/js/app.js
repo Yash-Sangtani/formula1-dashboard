@@ -106,10 +106,12 @@ function theme() {
 function help() {
   let o = $('#help');
   if (o) { o.remove(); return; }
-  const rows = [['1 2 3 4 5', 'Race / Deep dive / Analytics / All / 3D'],
+  const rows = [['1 2 3 4 5', 'Timing (Race) / Deep dive / Analytics / All / 3D'],
     ['C O T H R / I', '3D view: camera modes / HUD'], ['j / k', 'Select next / previous car'], ['Space', 'Pause / resume replay'],
     ['+ / -', 'Replay speed up / down'], ['F', 'Big-screen fullscreen'], ['Esc', 'Clear selection / close'], ['?', 'This help'],
-    ['Click', 'Select car (Shift/Ctrl adds)']];
+    ['Click', 'Select car (Shift/Ctrl adds)'], ['Map: On track', 'Practice / quali: hide cars in garage / pit lane'],
+    ['Tower (FP / Q)', 'Best lap + gap to fastest; red line = elimination zone; grey line = knocked out'],
+    ['Chips', 'ON TRACK / OUT lap / IN lap / PIT / GARAGE']];
   o = h('div', { id: 'help', onclick: () => o.remove() }, h('div', { class: 'help-card' }, h('h3', null, 'Keyboard shortcuts'),
     h('table', null, rows.map(([k, d]) => h('tr', null, h('td', null, h('kbd', null, k)), h('td', null, d))))));
   document.body.append(o);
@@ -140,6 +142,6 @@ applyUi(); theme();
 const mockKind = new URLSearchParams(location.search).get('mock');
 if (mockKind != null) {
   const k = mockKind === '1' || mockKind === '' ? 'race' : mockKind;
-  if (['fp', 'quali', 'sprint_quali'].includes(k)) import('../dev/mock-timed.js').then((m) => m.run(store, k)).catch((e) => console.error('mock', e));
+  if (['fp', 'quali', 'sprint_quali'].includes(k)) import('../dev/mock-timed.js').then((m) => m.run(store, k, { warm: +new URLSearchParams(location.search).get('warm') || undefined })).catch((e) => console.error('mock', e));
   else import('../dev/mock.js').then((m) => m.run(store, k)).catch((e) => console.error('mock', e));
 } else start();

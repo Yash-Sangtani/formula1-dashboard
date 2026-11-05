@@ -404,10 +404,12 @@ class RaceEngine:
             self._saw_timediff = True
             d.tdf_seen = True
             d.tdf_text, d.tdf_sec = parse_gap(ln["TimeDiffToFastest"])
-        if "TimeDiffToPositionAhead" in ln:
+        # The real feed has been seen spelling this both ways ("...ToPosition..." / "...toPosition...").
+        _tda_key = next((k for k in ("TimeDiffToPositionAhead", "TimeDifftoPositionAhead") if k in ln), None)
+        if _tda_key:
             self._saw_timediff = True
             d.tda_seen = True
-            d.tda_text, d.tda_sec = parse_gap(ln["TimeDiffToPositionAhead"])
+            d.tda_text, d.tda_sec = parse_gap(ln[_tda_key])
         lt = ln.get("LastLapTime")
         if isinstance(lt, dict):
             if "Value" in lt:

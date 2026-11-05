@@ -4,6 +4,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import re
 import time
 from collections import deque
 from contextlib import asynccontextmanager
@@ -12,10 +14,11 @@ from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
 from .engine import RaceEngine
+from .track import OfficialLayoutFallback
 
 log = logging.getLogger(__name__)
 
@@ -23,25 +26,60 @@ FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 FAST_HZ = 4.0
 STATE_MIN_INTERVAL = 1.0
 HISTORY_MIN_INTERVAL = 2.0
+MAX_CLIENTS = 100            # concurrent WebSocket viewers; extra ones are told to retry later (close code 1013)
+SEND_TIMEOUT = 15.0          # a client that cannot take one frame in this long is dropped
+MAX_CLIENT_MSG = 4096        # control messages from browsers are tiny; ignore anything bigger
+PHASES = ("waiting", "live", "ended", "error")
+
+
+def _default(o: Any) -> Any:
+    """json ``default=``: numpy scalars/arrays, sets, anything else as text (never raises)."""
+    item = getattr(o, "item", None)
+    if callable(item):
+        try:
+            return item()
+        except Exception:  # noqa: BLE001
+            pass
+    if isinstance(o, (set, frozenset, tuple)):
+        return list(o)
+    tolist = getattr(o, "tolist", None)
+    if callable(tolist):
+        try:
+            return tolist()
+        except Exception:  # noqa: BLE001
+            pass
+    return str(o)
 
 
 def _dumps(obj: Any) -> str:
-    return json.dumps(obj, separators=(",", ":"), allow_nan=False, default=str)
+    return json.dumps(obj, separators=(",", ":"), allow_nan=False, default=_default)
+
+
+def _clean(o: Any) -> Any:
+    """Replace NaN/inf by None, tuples by lists, non-string keys by strings; numpy values via ``_default``."""
+    if isinstance(o, float):
+        return o if o == o and o not in (float("inf"), float("-inf")) else None
+    if isinstance(o, dict):
+        return {(k if isinstance(k, str) else str(k)): _clean(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_clean(v) for v in o]
+    if o is None or isinstance(o, (str, int, bool)):
+        return o
+    d = _default(o)
+    return _clean(d) if d is not o and not isinstance(d, str) else d
 
 
 def _safe_dumps(obj: Any) -> str:
+    """Compact JSON that can never fail on NaN/inf/odd keys (those become null); last resort is an error frame."""
     try:
         return _dumps(obj)
-    except ValueError:  # NaN/inf sneaked in: sanitise
-        def clean(o):
-            if isinstance(o, float) and (o != o or o in (float("inf"), float("-inf"))):
-                return None
-            if isinstance(o, dict):
-                return {k: clean(v) for k, v in o.items()}
-            if isinstance(o, (list, tuple)):
-                return [clean(v) for v in o]
-            return o
-        return _dumps(clean(obj))
+    except (ValueError, TypeError):
+        pass
+    try:
+        return _dumps(_clean(obj))
+    except Exception:  # noqa: BLE001 - circular reference etc.
+        log.exception("could not serialise frame")
+        return _dumps({"type": "error", "message": "frame could not be serialised"})
 
 
 class NoCacheStatic(StaticFiles):
@@ -103,9 +141,17 @@ class Client:
             while not self.closed:
                 await self.event.wait()
                 for text in self.take():
-                    await self.ws.send_text(text)
-        except Exception:
+                    await asyncio.wait_for(self.ws.send_text(text), SEND_TIMEOUT)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # peer gone or too slow: drop this client, never the server
+            pass
+        finally:
             self.closed = True
+            try:  # unblocks the endpoint's receive loop so the client is cleaned up
+                await asyncio.wait_for(self.ws.close(), 2.0)
+            except Exception:  # noqa: BLE001
+                pass
 
 
 class ServerState:

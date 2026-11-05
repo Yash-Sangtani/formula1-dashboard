@@ -386,23 +386,55 @@ def test_simsource_pacing():
 
 
 # ----------------------------------------------------------------------------- LiveSource (fakes)
-class FakeClient:
-    """Stands in for fastf1's SignalRClient: start() blocks, appending lines, until timeout is lowered."""
+import backend.ingest.sources as S  # noqa: E402
 
-    def __init__(self, filename, filemode="a", timeout=60, no_auth=False, lines=(), delay=0.02, hold=True):
+
+class FakeClient:
+    """Stands in for fastf1's SignalRClient: start() appends lines, then blocks until the runner "kicks" it the
+    same way it kicks the real client (``timeout`` lowered to 1)."""
+
+    def __init__(self, filename, filemode="a", timeout=60, no_auth=False, lines=(), delay=0.0, hold=True):
         self.filename, self.filemode, self.timeout, self.no_auth = filename, filemode, timeout, no_auth
         self.lines, self.delay, self.hold = list(lines), delay, hold
         self._t_last_message = time.time()
 
-    def start(self):
+    def write_lines(self):
         with open(self.filename, self.filemode) as f:
             for ln in self.lines:
                 f.write(ln + "\n")
                 f.flush()
-                time.sleep(self.delay)
+                if self.delay:
+                    time.sleep(self.delay)
+
+    def wait_kick(self, limit=20.0):
         t0 = time.time()
-        while self.hold and self.timeout > 1 and time.time() - t0 < 10:
-            time.sleep(0.02)
+        while self.hold and self.timeout != 1 and time.time() - t0 < limit:
+            time.sleep(0.01)
+
+    def start(self):
+        self.write_lines()
+        self.wait_kick()
+
+
+def mk(tmp_path, factory, **kw):
+    kw.setdefault("poll", 0.01)
+    kw.setdefault("watch_interval", 0.02)
+    kw.setdefault("retry_delay", 0.05)
+    kw.setdefault("max_delay", 0.2)
+    return LiveSource(recordings_dir=str(tmp_path / "rec"), client_factory=factory, **kw)
+
+
+async def first(src, n, limit=15.0, pred=None):
+    got = []
+
+    async def go():
+        async for m in src.messages():
+            got.append(m)
+            if pred(m, got) if pred else len(got) >= n:
+                return
+
+    await asyncio.wait_for(go(), limit)
+    return got
 
 
 def test_livesource_tails_recording_and_stops(tmp_path):
@@ -418,119 +450,207 @@ def test_livesource_tails_recording_and_stops(tmp_path):
         made.append(c)
         return c
 
-    src = LiveSource(no_auth=True, recordings_dir=str(tmp_path / "rec"), client_factory=factory, poll=0.01)
-
-    async def go():
-        got = []
-        async for m in src.messages():
-            got.append(m)
-            if len(got) == 3:
-                break
-        return got
-
-    got = asyncio.run(asyncio.wait_for(go(), 10))
+    src = mk(tmp_path, factory, no_auth=True)
+    got = asyncio.run(first(src, 3))
     assert [m.topic for m in got] == ["DriverList", "TimingData", "CarData"]
     assert got[0].data == {"1": {"Tla": "VER"}}
     assert made and made[0].no_auth is True and made[0].filemode == "a"
-    # the raw feed is teed to recordings/<ts>.txt and is itself replayable
+    assert made[0].timeout in (0, 1)  # the client's own idle exit is disabled; the runner owns the policy
     files = list((tmp_path / "rec").glob("*.txt"))
     assert len(files) == 1
     replay = [parse_line(l) for l in files[0].read_text().splitlines()]
     assert [m.topic for m in replay] == ["DriverList", "TimingData", "CarData"]
-    assert src.control.info()["recording"] == str(files[0]) and src.control.replay is False
-    time.sleep(1.3)  # runner thread honours stop() (client timeout lowered) and exits
+    info = src.control.info()
+    assert info["recording"] == str(files[0]) and src.control.replay is False
+    assert info["recordingBytes"] == files[0].stat().st_size
+    src.close()
     assert not src.runner.is_alive()
 
 
 def test_livesource_partial_lines_are_not_emitted(tmp_path):
     path = tmp_path / "live.txt"
-    first = line("LapCount", {"CurrentLap": 1}, 1.0)
+    first_l = line("LapCount", {"CurrentLap": 1}, 1.0)
     second = line("LapCount", {"CurrentLap": 2}, 2.0)
 
     class Slow(FakeClient):
         def start(self):
             with open(self.filename, "a") as f:
-                f.write(first + "\n" + second[:20])
+                f.write(first_l + "\n" + second[:20])
                 f.flush()
                 time.sleep(0.3)
                 f.write(second[20:] + "\n")
                 f.flush()
-            while self.timeout > 1:
-                time.sleep(0.02)
+            self.wait_kick()
 
-    src = LiveSource(filename=str(path), client_factory=lambda *a: Slow(*a), poll=0.01)
-
-    async def go():
-        got = []
-        async for m in src.messages():
-            got.append(m)
-            if len(got) == 2:
-                return got
-
-    got = asyncio.run(asyncio.wait_for(go(), 10))
+    src = LiveSource(filename=str(path), client_factory=lambda *a: Slow(*a), poll=0.01, watch_interval=0.02)
+    got = asyncio.run(first(src, 2))
+    src.close()
     assert [m.data["CurrentLap"] for m in got] == [1, 2]
 
 
-def test_livesource_network_error_is_explained(tmp_path):
+def test_tail_handles_flush_boundaries_crlf_and_truncation(tmp_path):
+    p = tmp_path / "t.txt"
+    p.write_bytes(b"")
+    t = S._Tail(str(p))
+    assert t.read() == []
+    with open(p, "ab") as f:
+        f.write(b"abc\r\nde")
+        f.flush()
+        assert t.read() == [b"abc\r"]
+        f.write(b"f\n\ngh")
+        f.flush()
+        assert t.read() == [b"def", b""]
+        f.write(b"i\n")
+        f.flush()
+        assert t.read() == [b"ghi"]
+    p.write_bytes(b"x\n")  # truncated + rewritten shorter than our position
+    got = t.read() + t.read()
+    assert got in ([], [b"x"])
+    t.close()
+    # multibyte char split across two reads is only decoded once the line is complete
+    p.write_bytes(b"")
+    t = S._Tail(str(p))
+    snow = "Hülkenberg".encode()
+    with open(p, "ab") as f:
+        f.write(snow[:2])
+        f.flush()
+        assert t.read() == []
+        f.write(snow[2:] + b"\n")
+        f.flush()
+        assert t.read() == [snow]
+    t.close()
+
+
+def test_livesource_network_error_never_gives_up_and_is_explained(tmp_path):
     calls = []
 
     def factory(*a):
         calls.append(a)
-        raise ConnectionError("HTTPSConnectionPool(host='livetiming.formula1.com'): Max retries exceeded")
+        if len(calls) < 4:
+            raise ConnectionError("HTTPSConnectionPool(host='livetiming.formula1.com'): Max retries exceeded")
+        return FakeClient(*a, lines=[line("LapCount", {"CurrentLap": 9}, 1.0)])
 
-    src = LiveSource(recordings_dir=str(tmp_path), client_factory=factory, retry_delay=0.01, max_failures=2, poll=0.01)
-    with pytest.raises(LiveSourceError) as ei:
-        asyncio.run(asyncio.wait_for(collect(src), 10))
-    msg = str(ei.value)
-    assert "Cannot reach livetiming.formula1.com" in msg and "firewall" in msg
-    assert len(calls) >= 2  # it retried before giving up
-    assert src.control.info()["error"] == msg
+    src = mk(tmp_path, factory)
+    seen = {}
+
+    def pred(m, got):
+        return True
+
+    async def go():
+        async def run():
+            async for m in src.messages():
+                return m
+
+        task = asyncio.create_task(run())
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            i = src.control.info()
+            if i["error"]:
+                seen.update(i)
+                break
+        m = await asyncio.wait_for(task, 10)
+        return m
+
+    m = asyncio.run(go())
+    assert m.data == {"CurrentLap": 9}
+    assert len(calls) == 4  # failed 3 times (more than the old max_failures) and kept going
+    assert "Cannot reach livetiming.formula1.com" in seen["error"] and "firewall" in seen["error"]
+    assert seen["phase"] == "error" and seen["message"] == seen["error"]
+    src.close()
 
 
-def test_livesource_auth_error_is_explained(tmp_path):
-    class F1AuthError(Exception):
-        pass
+def test_livesource_auth_check_failure_then_success(tmp_path):
+    results = ["F1 sign-in failed (F1AuthError: bad password)", "No valid F1 TV token", None]
+    made = []
+
+    def auth():
+        return results.pop(0) if results else None
 
     def factory(*a):
-        raise F1AuthError("invalid credentials")
+        c = FakeClient(*a, lines=[line("LapCount", {"CurrentLap": 1}, 1.0)])
+        made.append(c)
+        return c
 
-    src = LiveSource(recordings_dir=str(tmp_path), client_factory=factory, retry_delay=0.01, max_failures=1, poll=0.01)
-    with pytest.raises(LiveSourceError) as ei:
-        asyncio.run(asyncio.wait_for(collect(src), 10))
-    assert "authentication failed" in str(ei.value) and "no_auth" in str(ei.value)
-    # with no_auth the hint about credentials is not repeated
-    src2 = LiveSource(recordings_dir=str(tmp_path), no_auth=True, client_factory=factory, retry_delay=0.01, max_failures=1)
-    with pytest.raises(LiveSourceError) as ei2:
-        asyncio.run(asyncio.wait_for(collect(src2), 10))
-    assert "authentication failed" in str(ei2.value) and "F1_USERNAME" not in str(ei2.value)
+    src = mk(tmp_path, factory, auth_check=auth)
+    errs = []
+
+    async def go():
+        async def run():
+            async for m in src.messages():
+                return m
+
+        task = asyncio.create_task(run())
+        while not task.done():
+            e = src.control.info()["error"]
+            if e and e not in errs:
+                errs.append(e)
+            await asyncio.sleep(0.005)
+        return task.result()
+
+    m = asyncio.run(asyncio.wait_for(go(), 15))
+    assert m.topic == "LapCount" and len(made) == 1  # no client is built until auth passes
+    assert any("sign-in failed" in e for e in errs)
+    assert src.control.info()["authState"] == "ok"
+    src.close()
 
 
-def test_livesource_http_401_negotiate_error(tmp_path):
-    def factory(*a):
-        raise RuntimeError("401 Client Error: Unauthorized for url: https://livetiming.formula1.com/signalrcore/negotiate")
+def test_livesource_no_auth_skips_auth_check(tmp_path):
+    called = []
+    src = mk(tmp_path, lambda *a: FakeClient(*a, lines=[line("LapCount", {"CurrentLap": 1}, 1.0)]), no_auth=True,
+             auth_check=lambda: called.append(1) or "nope")
+    asyncio.run(first(src, 1))
+    src.close()
+    assert called == [] and src.control.info()["authState"] == "skipped"
 
-    src = LiveSource(recordings_dir=str(tmp_path), client_factory=factory, retry_delay=0.01, max_failures=1)
-    with pytest.raises(LiveSourceError, match="authentication failed"):
-        asyncio.run(asyncio.wait_for(collect(src), 10))
 
-
-def test_livesource_no_data_restarts_then_errors(tmp_path):
-    """Client returns (its own no-data timeout) without writing anything: restart, then a clear error."""
+def test_livesource_waits_for_late_session_without_error_or_giving_up(tmp_path):
+    """Feed connects (snapshot + heartbeats) 'before the session': stay connected, phase waiting, no error."""
+    snap = [str(["SessionInfo", '{"Meeting": {"Name": "Test GP"}, "Name": "Practice 1", "Type": "Practice"}', ""]),
+            str(["SessionStatus", '{"Status": "Inactive"}', ""])]
     runs = []
 
-    class Silent(FakeClient):
+    class Late(FakeClient):
         def start(self):
-            runs.append(1)
-            open(self.filename, "a").close()
+            runs.append(time.time())
+            with open(self.filename, "a") as f:
+                for ln in snap:
+                    f.write(ln + "\n")
+                f.flush()
+                for i in range(6):  # a few heartbeats, then nothing for a while
+                    time.sleep(0.05)
+                    f.write(line("Heartbeat", {"Utc": format_ts(BASE + i)}, i) + "\n")
+                    f.flush()
+                time.sleep(1.0)  # "session not started": silence
+                f.write(line("SessionStatus", {"Status": "Started"}, 20.0) + "\n")
+                f.write(line("TimingData", {"Lines": {}}, 21.0) + "\n")
+                f.flush()
+            self.wait_kick()
 
-    src = LiveSource(recordings_dir=str(tmp_path), timeout=7, client_factory=lambda *a: Silent(*a),
-                     retry_delay=0.01, max_failures=3, poll=0.01)
-    with pytest.raises(LiveSourceError, match="No data received"):
-        asyncio.run(asyncio.wait_for(collect(src), 10))
-    assert len(runs) >= 3
+    src = mk(tmp_path, lambda *a: Late(*a), timeout=30, waiting_timeout=30)
+    phases = []
+
+    async def go():
+        async def run():
+            async for m in src.messages():
+                if m.topic == "TimingData":
+                    return
+
+        task = asyncio.create_task(run())
+        while not task.done():
+            i = src.control.info()
+            phases.append((i["phase"], i["error"], i["message"]))
+            await asyncio.sleep(0.05)
+
+    asyncio.run(asyncio.wait_for(go(), 15))
+    waiting = [p for p in phases if p[0] == "waiting"]
+    assert waiting and all(p[1] is None for p in phases)
+    assert any("waiting for the session" in p[2] and "Practice 1" in p[2] for p in waiting)
+    assert phases[-1][0] == "live" or src.control.info()["phase"] == "live"
+    assert len(runs) == 1  # never reconnected while waiting
+    src.close()
 
 
-def test_livesource_reconnects_after_data_was_seen(tmp_path):
+def test_livesource_mid_stream_drop_reconnects_and_keeps_recording(tmp_path):
     n = {"runs": 0}
 
     class Flaky(FakeClient):
@@ -538,28 +658,151 @@ def test_livesource_reconnects_after_data_was_seen(tmp_path):
             n["runs"] += 1
             with open(self.filename, "a") as f:
                 f.write(line("LapCount", {"CurrentLap": n["runs"]}, float(n["runs"])) + "\n")
-            # returns immediately -> supervisor "timeout"; LiveSource must start a new client in the same file
+            # returns immediately -> a dropped connection; LiveSource must start a new client in the same file
 
-    src = LiveSource(recordings_dir=str(tmp_path), client_factory=lambda *a: Flaky(*a), retry_delay=0.05,
-                     max_failures=1, poll=0.01)
-
-    async def go():
-        got = []
-        async for m in src.messages():
-            got.append(m.data["CurrentLap"])
-            if len(got) == 3:
-                return got
-
-    assert asyncio.run(asyncio.wait_for(go(), 10)) == [1, 2, 3]
+    src = mk(tmp_path, lambda *a: Flaky(*a))
+    got = asyncio.run(first(src, 4))
+    src.close()
+    assert [m.data["CurrentLap"] for m in got] == [1, 2, 3, 4]
+    assert len(list((tmp_path / "rec").glob("*.txt"))) == 1
 
 
-def test_livesource_missing_fastf1_gives_clear_error(tmp_path, monkeypatch):
+def test_livesource_detects_closed_websocket_while_start_keeps_blocking(tmp_path):
+    runs = []
+
+    class Dropper(FakeClient):
+        _is_connected = False
+
+        def start(self):
+            runs.append(self)
+            self._is_connected = True
+            with open(self.filename, "a") as f:
+                f.write(line("LapCount", {"CurrentLap": len(runs)}, float(len(runs))) + "\n")
+            time.sleep(0.15)
+            self._is_connected = False  # websocket closed; the real supervise loop would idle until its timeout
+            self.wait_kick()
+
+    src = mk(tmp_path, lambda *a: Dropper(*a), drop_grace=0.1)
+    got = asyncio.run(first(src, 3))
+    src.close()
+    assert [m.data["CurrentLap"] for m in got] == [1, 2, 3]
+
+
+def test_livesource_connect_hang_is_recycled(tmp_path):
+    """fastf1's _run() spins `while not self._is_connected` forever when the websocket never opens."""
+    runs = []
+
+    class Hang(FakeClient):
+        _is_connected = False
+
+        def start(self):
+            runs.append(self)
+            if len(runs) >= 3:
+                self._is_connected = True
+                self.write_lines()
+                self.wait_kick()
+                return
+            while not self._is_connected:
+                time.sleep(0.01)
+            # released by the runner's kick -> behaves like a failed run (nothing written)
+
+    src = mk(tmp_path, lambda *a: Hang(*a, lines=[line("LapCount", {"CurrentLap": 5}, 1.0)]), connect_timeout=0.2)
+    got = asyncio.run(first(src, 1))
+    assert got[0].data == {"CurrentLap": 5} and len(runs) == 3
+    src.close()
+
+
+def test_livesource_abandons_client_thread_that_ignores_kick(tmp_path, monkeypatch):
+    monkeypatch.setattr(S, "KICK_GRACE", 0.3)
+    runs = []
+
+    class Deaf(FakeClient):
+        _is_connected = True
+
+        def start(self):
+            runs.append(self)
+            if len(runs) == 1:
+                time.sleep(3)  # ignores timeout/stop entirely
+                return
+            self.write_lines()
+            self.wait_kick()
+
+    src = mk(tmp_path, lambda *a: Deaf(*a, lines=[line("LapCount", {"CurrentLap": 1}, 1.0)]), timeout=0.2, waiting_timeout=0.2)
+    got = asyncio.run(first(src, 1))
+    src.close()
+    assert got and len(runs) >= 2
+
+
+def test_livesource_idle_feed_that_was_live_is_recycled(tmp_path):
+    runs = []
+
+    class Dies(FakeClient):
+        def start(self):
+            runs.append(1)
+            self.write_lines()  # one live line, then total silence (half-open socket)
+            self.wait_kick()
+
+    src = mk(tmp_path, lambda *a: Dies(*a, lines=[line("LapCount", {"CurrentLap": len(runs) + 1}, 1.0)]),
+             timeout=0.3, waiting_timeout=60)
+    got = asyncio.run(first(src, 2))
+    src.close()
+    assert len(got) == 2 and len(runs) >= 2
+
+
+def test_livesource_survives_systemexit_and_garbage(tmp_path):
+    runs = []
+
+    class Exits(FakeClient):
+        def start(self):
+            runs.append(1)
+            if len(runs) == 1:
+                raise SystemExit(1)
+            with open(self.filename, "a") as f:
+                f.write("this is not a feed line\n")
+                f.write(line("LapCount", {"CurrentLap": 7}, 1.0) + "\n")
+            self.wait_kick()
+
+    src = mk(tmp_path, lambda *a: Exits(*a))
+    got = asyncio.run(first(src, 1))
+    assert got[0].data == {"CurrentLap": 7} and src.bad_lines == 1
+    src.close()
+
+
+def test_livesource_terminates_partial_line_left_by_previous_client(tmp_path):
+    runs = []
+
+    class Killed(FakeClient):
+        def start(self):
+            runs.append(1)
+            with open(self.filename, "a") as f:
+                if len(runs) == 1:
+                    f.write(line("LapCount", {"CurrentLap": 1}, 1.0)[:25])  # process died mid-write
+                    return
+                f.write(line("LapCount", {"CurrentLap": 2}, 2.0) + "\n")
+            self.wait_kick()
+
+    src = mk(tmp_path, lambda *a: Killed(*a))
+    got = asyncio.run(first(src, 1))
+    src.close()
+    assert got[0].data == {"CurrentLap": 2}  # not glued onto the partial line
+
+
+def test_livesource_missing_fastf1_is_fatal_but_does_not_raise_or_spin(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "fastf1", None)
     monkeypatch.setitem(sys.modules, "fastf1.livetiming", None)
     monkeypatch.setitem(sys.modules, "fastf1.livetiming.client", None)
-    src = LiveSource(recordings_dir=str(tmp_path), retry_delay=0.01, poll=0.01)
-    with pytest.raises(LiveSourceError, match="fastf1"):
-        asyncio.run(asyncio.wait_for(collect(src), 10))
+    src = LiveSource(recordings_dir=str(tmp_path), retry_delay=0.01, poll=0.01, watch_interval=0.02)
+
+    async def go():
+        t = asyncio.create_task(first(src, 1, limit=30))
+        await asyncio.sleep(0.5)
+        i = src.control.info()
+        t.cancel()
+        return i
+
+    i = asyncio.run(go())
+    assert "fastf1" in i["error"] and i["phase"] == "error"
+    assert len(list(tmp_path.glob("*.txt"))) == 1  # no recording-file litter per retry
 
 
 def test_import_does_not_require_fastf1():
@@ -573,10 +816,260 @@ def test_import_does_not_require_fastf1():
     assert r.returncode == 0 and "ok" in r.stdout, r.stderr
 
 
+# ----------------------------------------------------------------------------- the real fastf1 client (offline)
 def test_default_factory_builds_real_client_without_network(tmp_path):
-    """fastf1 3.x is installed here: constructing (not starting) the real client must work offline."""
     pytest.importorskip("fastf1")
-    from backend.ingest.sources import _default_client_factory
+    from fastf1.livetiming.client import SignalRClient
 
-    c = _default_client_factory(str(tmp_path / "x.txt"), "a", 5, True)
-    assert type(c).__name__ == "SignalRClient" and c.timeout == 5
+    c = S._default_client_factory(str(tmp_path / "x.txt"), "a", 5, True)
+    assert isinstance(c, SignalRClient) and c.timeout == 5 and c._no_auth is True
+
+
+def _real_clients(tmp_path, encoding=None):
+    pytest.importorskip("fastf1")
+    from fastf1.livetiming.client import SignalRClient
+
+    a = S._default_client_factory(str(tmp_path / "ours.txt"), "a", 0, True)
+    b = SignalRClient(str(tmp_path / "stock.txt"), filemode="a", no_auth=True, logger=logging.getLogger("stock"))
+    a._output_file = open(tmp_path / "ours.txt", "a", encoding=encoding)
+    b._output_file = open(tmp_path / "stock.txt", "a")
+    return a, b
+
+
+import logging  # noqa: E402
+
+
+def test_recording_client_formats_exactly_like_stock_fastf1(tmp_path):
+    from signalrcore.messages.completion_message import CompletionMessage
+
+    a, b = _real_clients(tmp_path)
+    msgs = [
+        ["Heartbeat", {"Utc": "2025-03-16T04:00:00.123Z", "_kf": True}, "2025-03-16T04:00:00.123Z"],
+        ["TimingData", {"Lines": {"1": {"InPit": False, "Sectors": {"0": {"Value": "28.1", "Stopped": True}}}}}, "2025-03-16T04:00:01.1Z"],
+        ["CarData.z", encode_z({"Entries": []}), "2025-03-16T04:00:01.1Z"],
+        CompletionMessage("1", {"Heartbeat": {"Utc": "x"}, "CarData.z": encode_z({"Entries": []}), "DriverList": {"1": {"Tla": "VER"}}}, None),
+    ]
+    for m in msgs:
+        a._on_message(m)
+        b._on_message(m)
+    a._output_file.close()
+    b._output_file.close()
+    assert (tmp_path / "ours.txt").read_bytes() == (tmp_path / "stock.txt").read_bytes()
+    parsed = [parse_line(l) for l in (tmp_path / "ours.txt").read_text().splitlines()]
+    assert parsed[0].topic == "Heartbeat" and parsed[1].data["Lines"]["1"]["InPit"] is False
+    snap = parsed[3:]
+    assert [p.topic for p in snap][-1] == "DriverList" and snap[-1].data == {"1": {"Tla": "VER"}}
+
+
+def test_recording_client_writes_utf8_even_with_ascii_locale_file(tmp_path):
+    a, _ = _real_clients(tmp_path, encoding="ascii")  # stock client would raise UnicodeEncodeError and drop the line
+    a._on_message(["RaceControlMessages", {"Messages": [{"Message": "CAR 27 (HÜLKENBERG) TIME 1:29.1 DELETED"}]}, "2025-03-16T04:00:01.1Z"])
+    a._output_file.close()
+    m = parse_line((tmp_path / "ours.txt").read_bytes().splitlines()[0])
+    assert "HÜLKENBERG" in m.data["Messages"][0]["Message"]
+
+
+def test_recording_client_reports_rejected_subscription(tmp_path):
+    from signalrcore.messages.completion_message import CompletionMessage
+
+    a, _ = _real_clients(tmp_path)
+    a._on_message(CompletionMessage("1", None, "Unauthorized"))
+    assert "rejected the subscription" in a.feed_error and "Unauthorized" in a.feed_error
+    # a malformed completion (no result, no error) must not raise either
+    a._on_message(CompletionMessage("1", None, None))
+    a._output_file.close()
+    assert (tmp_path / "ours.txt").read_bytes() == b""
+
+
+def test_default_auth_check_never_prompts_and_explains(tmp_path, monkeypatch):
+    pytest.importorskip("fastf1")
+    acct = S._f1_account()
+    monkeypatch.delenv("F1_USERNAME", raising=False)
+    monkeypatch.delenv("F1_PASSWORD", raising=False)
+    monkeypatch.setattr(acct.token_manager, "get_stored", lambda: None)
+    called = []
+    monkeypatch.setattr(acct, "get_token", lambda *a, **k: called.append(1))
+    monkeypatch.setattr("builtins.input", lambda *a: (_ for _ in ()).throw(AssertionError("prompted")))
+    msg = S._default_auth_check()
+    assert "F1_USERNAME" in msg and "--authenticate" in msg and called == []
+    # credentials present: signs in through fastf1 (faked), None = ok
+    monkeypatch.setenv("F1_USERNAME", "u")
+    monkeypatch.setenv("F1_PASSWORD", "p")
+    assert S._default_auth_check() is None and called == [1]
+    # sign-in failure is reported, with no secret in the text
+    from fastf1.exceptions import F1AuthError
+
+    def boom(*a, **k):
+        raise F1AuthError("Sign-in failed: bad credentials")
+
+    monkeypatch.setattr(acct, "get_token", boom)
+    msg = S._default_auth_check()
+    assert "sign-in failed" in msg.lower() and "p" != msg
+
+
+# ----------------------------------------------------------------------------- long run / throughput
+def test_tail_throughput_200k_lines_two_hour_session(tmp_path):
+    """A 2 h session is ~200k lines.  The tailer must keep up with a fast writer and stay linear."""
+    t = encode_z({"Entries": [{"Utc": format_ts(BASE), "Cars": {str(i): {"Channels": {"0": 11000, "2": 300 + i}} for i in range(1, 21)}}]})
+    templ = [
+        str(["CarData.z", t, format_ts(BASE + 5)]),
+        str(["Position.z", t, format_ts(BASE + 5)]),
+        line("TimingData", {"Lines": {"1": {"Position": "1", "GapToLeader": "+1.2"}}}, 5.0),
+        line("Heartbeat", {"Utc": format_ts(BASE + 5)}, 5.0),
+    ]
+    N = 200_000
+
+    class Writer(FakeClient):
+        def start(self):
+            with open(self.filename, "a") as f:
+                for i in range(0, N, 5000):
+                    f.write("\n".join(templ[(j % 4)] for j in range(i, i + 5000)) + "\n")
+                    f.flush()
+                    time.sleep(0.001)
+            self.wait_kick()
+
+    src = mk(tmp_path, lambda *a: Writer(*a))
+    t0 = time.monotonic()
+
+    async def go():
+        n = 0
+        lags = []
+        async for m in src.messages():
+            n += 1
+            if n % 20000 == 0:
+                lags.append(time.monotonic())
+            if n >= N:
+                return n
+
+    n = asyncio.run(asyncio.wait_for(go(), 240))
+    dt = time.monotonic() - t0
+    src.close()
+    assert n == N
+    assert dt < 120, "tailing 200k lines took %.1fs" % dt
+
+
+def test_event_loop_stays_responsive_while_tailing_a_backlog(tmp_path):
+    t = encode_z({"Entries": []})
+    lines = [str(["CarData.z", t, format_ts(BASE + i * 0.01)]) for i in range(30000)]
+    p = tmp_path / "rec" / "x.txt"
+    p.parent.mkdir()
+    p.write_text("\n".join(lines) + "\n")
+    src = LiveSource(filename=str(p), client_factory=lambda *a: FakeClient(*a), poll=0.01, watch_interval=0.02)
+    gaps = []
+
+    async def go():
+        async def ticker():
+            last = time.monotonic()
+            while True:
+                await asyncio.sleep(0.01)
+                now = time.monotonic()
+                gaps.append(now - last)
+                last = now
+
+        tk = asyncio.create_task(ticker())
+        n = 0
+        async for m in src.messages():
+            n += 1
+            if n >= 30000:
+                break
+        tk.cancel()
+        return n
+
+    assert asyncio.run(asyncio.wait_for(go(), 60)) == 30000
+    src.close()
+    assert max(gaps) < 1.0
+
+
+# ----------------------------------------------------------------------------- real fastf1 client driven through a fake hub
+class _FakeConn:
+    """Replaces signalrcore's HubConnection inside fastf1's client: opens (or never opens), answers Subscribe with a
+    snapshot CompletionMessage and then streams ``feed`` invocations - the shapes the real hub produces."""
+
+    instances: list = []
+
+    def __init__(self, open_ok=True, feed=()):
+        self.open_ok, self.feed_msgs = open_ok, list(feed)
+        self.cb = {}
+        self.stopped = False
+        _FakeConn.instances.append(self)
+
+    def on_open(self, cb):
+        self.cb["open"] = cb
+
+    def on_close(self, cb):
+        self.cb["close"] = cb
+
+    def on(self, ev, cb):
+        self.cb[ev] = cb
+
+    def start(self):
+        if self.open_ok:
+            threading.Timer(0.05, self.cb["open"]).start()
+
+    def send(self, method, args, on_invocation=None):
+        if method != "Subscribe":
+            raise AssertionError(method)
+        from signalrcore.messages.completion_message import CompletionMessage
+
+        def pump():
+            on_invocation(CompletionMessage("1", {"SessionStatus": {"Status": "Inactive"}, "Heartbeat": {"Utc": "x"}}, None))
+            for m in self.feed_msgs:
+                time.sleep(0.02)
+                self.cb["feed"](m)
+
+        threading.Thread(target=pump, daemon=True).start()
+
+    def stop(self):
+        self.stopped = True
+        if "close" in self.cb:
+            self.cb["close"]()
+
+
+def _patch_hub(monkeypatch, conns):
+    pytest.importorskip("fastf1")
+    import fastf1.livetiming.client as fc
+
+    class Builder:
+        def with_url(self, *a, **k):
+            return self
+
+        def configure_logging(self, *a, **k):
+            return self
+
+        def build(self):
+            return conns.pop(0)
+
+    class Resp:
+        cookies = {"AWSALBCORS": "abc"}
+
+    monkeypatch.setattr(fc, "HubConnectionBuilder", Builder)
+    monkeypatch.setattr(fc.requests, "options", lambda *a, **k: Resp())
+
+
+def test_real_fastf1_client_through_fake_hub_end_to_end(tmp_path, monkeypatch):
+    feed = [["Heartbeat", {"Utc": "2025-03-16T04:00:00.123Z"}, "2025-03-16T04:00:00.123Z"],
+            ["SessionStatus", {"Status": "Started"}, "2025-03-16T04:00:01.000Z"],
+            ["TimingData", {"Lines": {"1": {"Position": "1"}}}, "2025-03-16T04:00:02.000Z"]]
+    conn = _FakeConn(feed=feed)
+    _patch_hub(monkeypatch, [conn])
+    src = LiveSource(no_auth=True, recordings_dir=str(tmp_path), poll=0.01, watch_interval=0.05)
+    got = asyncio.run(first(src, 5))
+    assert [m.topic for m in got] == ["SessionStatus", "Heartbeat", "Heartbeat", "SessionStatus", "TimingData"]
+    assert src.control.info()["phase"] == "live" and src.control.info()["connected"] is True
+    t0 = time.time()
+    src.close()  # real SignalRClient._supervise exits on its next 1 s tick after our kick
+    assert time.time() - t0 < 5 and not src.runner.is_alive()
+    assert conn.stopped
+    rec = list(tmp_path.glob("*.txt"))[0]
+    assert [parse_line(l).topic for l in rec.read_text().splitlines()][-1] == "TimingData"
+
+
+def test_real_fastf1_client_connect_hang_is_broken_and_retried(tmp_path, monkeypatch):
+    bad = _FakeConn(open_ok=False)  # websocket never opens -> stock _run() would spin forever
+    good = _FakeConn(feed=[["Heartbeat", {"Utc": "x"}, "2025-03-16T04:00:00.123Z"]])
+    _patch_hub(monkeypatch, [bad, good])
+    src = LiveSource(no_auth=True, recordings_dir=str(tmp_path), poll=0.01, watch_interval=0.05, connect_timeout=0.4,
+                     retry_delay=0.05)
+    got = asyncio.run(first(src, 1, pred=lambda m, g: m.topic == "Heartbeat"))
+    assert got and bad.stopped
+    src.close()

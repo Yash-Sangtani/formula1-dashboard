@@ -618,11 +618,12 @@ class _ClientRunner(threading.Thread):
 
     def __init__(self, factory: Callable[..., Any], path: str, *, no_auth: bool, retry_delay: float,
                  idle_timeout: float, waiting_timeout: float, connect_timeout: float, max_delay: float,
-                 auth_check: Optional[Callable[[], Optional[str]]], watch_interval: float) -> None:
+                 auth_check: Optional[Callable[[], Optional[str]]], watch_interval: float, drop_grace: float = 3.0) -> None:
         super().__init__(name="f1-live-client", daemon=True)
         self.factory, self.path, self.no_auth, self.retry_delay = factory, path, no_auth, retry_delay
         self.idle_timeout, self.waiting_timeout, self.connect_timeout = idle_timeout, waiting_timeout, connect_timeout
         self.max_delay, self.auth_check, self.watch_interval = max_delay, auth_check, watch_interval
+        self.drop_grace = drop_grace
         self.stop_event = threading.Event()
         self.client: Any = None
         self.status = "starting"
@@ -811,7 +812,7 @@ class _ClientRunner(threading.Thread):
                 reason = "connect timeout"
                 self.error = ("Could not open the F1 live timing websocket within %ds (blocked network, bad token or "
                               "service problem); retrying." % self.connect_timeout)
-            elif was_conn and disc_since is not None and now - disc_since > 3.0:
+            elif was_conn and disc_since is not None and now - disc_since > self.drop_grace:
                 reason = "connection closed"
                 self.note = "connection to F1 live timing was closed; reconnecting"
             elif conn:
@@ -899,7 +900,7 @@ class LiveSource(Source):
     def __init__(self, *, no_auth: bool = False, recordings_dir: str = "recordings", filename: Optional[str] = None,
                  timeout: int = 60, waiting_timeout: float = 300.0, connect_timeout: float = CONNECT_TIMEOUT,
                  max_failures: int = 0, retry_delay: float = 3.0, max_delay: float = 60.0, poll: float = 0.05,
-                 watch_interval: float = 0.5, client_factory: Optional[Callable[..., Any]] = None,
+                 watch_interval: float = 0.5, drop_grace: float = 3.0, client_factory: Optional[Callable[..., Any]] = None,
                  auth_check: Optional[Callable[[], Optional[str]]] = None) -> None:
         """``timeout``: seconds of total silence (not even Heartbeat) after which a feed that was live is recycled;
         ``waiting_timeout``: same when only the initial snapshot arrived (no session running); ``max_failures`` is
@@ -914,6 +915,7 @@ class LiveSource(Source):
         self.max_delay = max_delay
         self.poll = poll
         self.watch_interval = watch_interval
+        self.drop_grace = drop_grace
         self._factory = client_factory or _default_client_factory
         self._auth_check = auth_check if auth_check is not None else (_default_auth_check if client_factory is None else None)
         self.control = Control(1.0, False, replay=False)
@@ -1049,7 +1051,7 @@ class LiveSource(Source):
         runner = self.runner = _ClientRunner(
             self._factory, path, no_auth=self.no_auth, retry_delay=self.retry_delay, idle_timeout=self.idle_timeout,
             waiting_timeout=self.waiting_timeout, connect_timeout=self.connect_timeout, max_delay=self.max_delay,
-            auth_check=self._auth_check, watch_interval=self.watch_interval)
+            auth_check=self._auth_check, watch_interval=self.watch_interval, drop_grace=self.drop_grace)
         open(path, "ab").close()  # the tailer can open it right away
         tail = _Tail(path)
         runner.start()

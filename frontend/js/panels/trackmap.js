@@ -13,6 +13,7 @@ export function mount(el, store) {
   const tip = el.querySelector('.map-tip'), emptyEl = el.querySelector('.map-empty');
   const opts = Object.assign({ labels: true, trails: true, follow: false, onTrack: true }, ls.get('f1.map', {}));
   const optBtns = [...el.querySelectorAll('.map-opts button')];
+  const onTrackBtn = optBtns.find((b) => b.dataset.o === 'onTrack'); onTrackBtn.hidden = true;
   const syncOpts = () => optBtns.forEach((b) => b.classList.toggle('on', !!opts[b.dataset.o]));
   optBtns.forEach((b) => b.onclick = () => { opts[b.dataset.o] = !opts[b.dataset.o]; ls.set('f1.map', opts); syncOpts(); });
   syncOpts();
@@ -301,7 +302,7 @@ export function mount(el, store) {
   store.subscribe((k) => {
     if (k === 'track') { buildGeo(); }
     else if (k === 'fast') ingestAll(false);
-    else if (k === 'state') { ingestAll(true); prune(); }
+    else if (k === 'state') { ingestAll(true); prune(); const tm = sessionOf(store.state).timed; if (onTrackBtn.hidden === tm) onTrackBtn.hidden = !tm; }
     else if (k === 'reset') { for (const k2 of Object.keys(anim)) delete anim[k2]; for (const k2 of Object.keys(trails)) delete trails[k2]; }
   });
   document.addEventListener('visibilitychange', () => { last = performance.now(); });

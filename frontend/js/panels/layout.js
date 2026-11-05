@@ -1,4 +1,5 @@
 import { h, ls } from '../util.js';
+import { sessionOf } from '../session.js';
 
 export const VIEWS = [['race', 'Race', '1'], ['deep', 'Deep dive', '2'], ['analytics', 'Analytics', '3'], ['all', 'All', '4'], ['chase', '3D', '5']];
 const KEY = 'f1.layouts';
@@ -39,6 +40,7 @@ export function mount(el, store, ctl) {
   const sync = () => {
     [...tabs.children].forEach((b) => { const on = b.dataset.v === ctl.ui.view; b.classList.toggle('on', on); b.setAttribute('aria-selected', on); });
   };
+  store.subscribe((k) => { if (k === 'state') { const t = sessionOf(store.state).timed ? 'Timing' : 'Race'; if (tabs.firstChild.textContent !== t) tabs.firstChild.textContent = t; } });
   ctl.onChange(() => { sync(); if (!menu.hidden) renderMenu(); });
   sync();
 }

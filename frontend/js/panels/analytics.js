@@ -1,5 +1,7 @@
 // Race analytics panel (stage 4). export function mount(el, store)
 import { reportError } from '../store.js';
+import { sessionOf } from '../session.js';
+import { bestsOf, idealLap, runsFromLaps } from '../derive.js';
 import {
   Chart, COLORS, TYRE, esc, h, rafThrottle, isNum, fmtLap, fmtDelta, median, quantile, linreg,
   tyreColor, tyreLetter, indexHistory, teamStyles, raceBands, stintsFromLaps, heatColor,
@@ -13,8 +15,10 @@ const KINDS = {
 };
 const TABS = [
   ['trace', 'Race trace'], ['pos', 'Positions'], ['strat', 'Strategy'], ['pace', 'Pace'],
-  ['pits', 'Pit stops'], ['events', 'Events'], ['speeds', 'Speeds & bests'],
+  ['pits', 'Pit stops'], ['events', 'Events'], ['speeds', 'Speeds & bests'], ['bests', 'Sector bests'],
 ];
+const TABS_TIMED = [['bests', 'Sector bests'], ['pace', 'Stint pace'], ['events', 'Events'], ['speeds', 'Speeds & bests'], ['trace', 'Race trace'], ['pos', 'Positions'], ['strat', 'Strategy'], ['pits', 'Pit stops']];
+const RACE_ONLY = new Set(['trace', 'pos', 'strat', 'pits']);
 const intFmt = (v) => String(Math.round(v));
 
 export function mount(el, store) {
@@ -25,6 +29,7 @@ export function mount(el, store) {
   let active = 'trace';
   try { active = localStorage.getItem('f1.an.tab') || 'trace'; } catch { /* ignore */ }
   if (!TABS.some((t) => t[0] === active)) active = 'trace';
+  if (active === 'bests') active = 'trace'; // restored properly by layoutTabs() for timed sessions
   let hlLap = null;      // lap highlighted via event click
   let refDriver = 'leader';
   const views = {};
@@ -38,16 +43,27 @@ export function mount(el, store) {
   const lapsOf = (n) => (HIST() && HIST().laps && HIST().laps[n]) || [];
   const pick = (id) => store.select(id, { additive: true });
 
+  const tabBtns = {};
   TABS.forEach(([id, label]) => {
-    const b = h('button', 'an-tab', label); b.type = 'button'; b.dataset.tab = id;
+    const b = h('button', 'an-tab', label); b.type = 'button'; b.dataset.tab = id; tabBtns[id] = b;
     b.addEventListener('click', () => setTab(id));
     bar.appendChild(b);
   });
   const lapBadge = h('div', 'an-lap');
   bar.appendChild(lapBadge);
+  let tabKind = ''; // 'timed' | 'race': tab order / labels follow the session type
+  function layoutTabs(timed) {
+    const k = timed ? 'timed' : 'race'; if (k === tabKind) return; tabKind = k;
+    const list = timed ? TABS_TIMED : TABS;
+    list.forEach(([id, label]) => { tabBtns[id].textContent = label; bar.insertBefore(tabBtns[id], lapBadge); tabBtns[id].classList.toggle('an-na-tab', timed && RACE_ONLY.has(id)); });
+    if (timed && RACE_ONLY.has(active)) active = 'bests';
+    else if (!timed && active === 'bests' && !tabBtns.bests.dataset.userpick) active = 'trace';
+  }
+  const naView = h('div', 'an-msg an-na', '<b>Not applicable for this session</b>This view compares race position, gaps and pit strategy, which do not exist in practice or qualifying. Use <i>Sector bests</i>, <i>Stint pace</i> or <i>Speeds &amp; bests</i> instead.');
+  naView.hidden = true; body.appendChild(naView);
 
   function setTab(id) {
-    active = id;
+    active = id; tabBtns.bests.dataset.userpick = '1';
     try { localStorage.setItem('f1.an.tab', id); } catch { /* ignore */ }
     render(true);
   }
@@ -203,6 +219,7 @@ export function mount(el, store) {
     tb.innerHTML = `<label class="an-chk"><input type="checkbox" data-r="excl" checked> exclude pit / SC / out laps</label>
       <label class="an-chk"><input type="checkbox" data-r="clip" checked> clip outliers</label>
       <label class="an-chk"><input type="checkbox" data-r="fuel"> fuel-corrected (${FUEL_S_PER_LAP}s/lap)</label>
+      <label class="an-chk an-timed-only"><input type="checkbox" data-r="long"> long runs only (5+ laps)</label>
       <label>Colour <select data-r="col"><option value="team">team</option><option value="tyre">tyre</option></select></label>`;
     const host = h('div', 'an-chart an-chart-s');
     const tcard = card('Stint pace', 'average, best and degradation slope (s/lap, + = slower with age)');
@@ -215,6 +232,10 @@ export function mount(el, store) {
       render() {
         empty(root, !hasLaps());
         if (!hasLaps()) return;
+        const timedS = sessionOf(S()).timed;
+        for (const e of tb.querySelectorAll('.an-timed-only')) e.style.display = timedS ? '' : 'none';
+        if (timedS && !R.long._init) { R.long._init = true; R.long.checked = sessionOf(S()).isPractice; }
+        const minLaps = timedS && R.long.checked ? 5 : 0;
         const excl = R.excl.checked, clip = R.clip.checked, fuel = R.fuel.checked, byTyre = R.col.value === 'tyre';
         const adj = (e) => e.sec + (fuel ? FUEL_S_PER_LAP * (e.lap - 1) : 0);
         const valid = (e, prev) => isNum(e.sec) && e.lap > 1 && (!excl || (!e.pit && !(prev && prev.pit) && String(e.track ?? '1') === '1'));
@@ -244,7 +265,7 @@ export function mount(el, store) {
         const rows = [];
         for (const n of orderedNums()) {
           const arr = lapsOf(n), idx = new Map(arr.map((e, i) => [e, i]));
-          stintsFromLaps(arr).forEach((s, k) => {
+          (timedS ? runsFromLaps : stintsFromLaps)(arr).forEach((s, k) => {
             const good = s.laps.filter((e) => valid(e, arr[idx.get(e) - 1]) && adj(e) <= lim);
             if (!good.length) { rows.push({ n, k, s, cnt: 0 }); return; }
             const ts = good.map(adj), avg = ts.reduce((a, b) => a + b, 0) / ts.length;
@@ -254,6 +275,7 @@ export function mount(el, store) {
         }
         const sorted = new Map(orderedNums().map((n, i) => [n, i]));
         rows.sort((a, b) => sorted.get(a.n) - sorted.get(b.n) || a.k - b.k);
+        if (minLaps) for (let i = rows.length - 1; i >= 0; i--) if (rows[i].cnt < minLaps) rows.splice(i, 1);
         tw.innerHTML = `<table class="an-tbl"><thead><tr><th>P</th><th>Driver</th><th>Stint</th><th>Tyre</th><th>Laps</th><th>Avg</th><th>Best</th><th>Deg s/lap</th></tr></thead><tbody>${rows.map((r) => {
           const c = cars()[r.n];
           const d = r.slope;
@@ -425,14 +447,65 @@ export function mount(el, store) {
     };
   })();
 
+  // ---------------------------------------------------------- (h) sector bests / ideal lap / session-best progression
+  views.bests = (() => {
+    const root = h('div', 'an-view');
+    const tcard = card('Sector bests & ideal lap', 'purple = session best · potential = best lap - ideal lap');
+    const tw = h('div', 'an-scroll'); tcard.appendChild(tw);
+    const ccard = card('Session best progression', 'running fastest timed lap by lap number · hover for the driver');
+    const host = h('div', 'an-chart an-chart-s'); ccard.appendChild(host);
+    root.append(tcard, ccard);
+    tw.addEventListener('click', (e) => { const tr = e.target.closest('tr[data-n]'); if (tr) pick(tr.dataset.n); });
+    let chart = null;
+    return {
+      root,
+      render() {
+        const st = S(), X = sessionOf(st), B = bestsOf(HIST());
+        const nums = orderedNums();
+        empty(root, !st || !nums.length, 'Waiting for session data…');
+        if (!st || !nums.length) return;
+        // merge live best lap (car.best) with history so the table works before history arrives
+        const rows = nums.map((n) => {
+          const c = cars()[n], p = B.pb[n] || { s: [null, null, null], lap: null, n: 0 };
+          const lap = isNum(c.best.sec) ? (isNum(p.lap) ? Math.min(p.lap, c.best.sec) : c.best.sec) : p.lap;
+          return { n, c, p, lap, ideal: idealLap(p), laps: c.timedLaps != null ? c.timedLaps : p.n };
+        }).filter((r) => isNum(r.lap) || r.p.s.some(isNum));
+        rows.sort((a, b) => (isNum(a.lap) ? a.lap : 1e9) - (isNum(b.lap) ? b.lap : 1e9));
+        const topLap = rows.length && isNum(rows[0].lap) ? rows[0].lap : null;
+        const sc = (r, i) => { const v = r.p.s[i], o = B.ob.s[i]; return `<td class="${isNum(v) && o && v <= o.v + 5e-4 ? 'pu' : ''}">${isNum(v) ? v.toFixed(3) : '–'}</td>`; };
+        const bestIdeal = rows.filter((r) => isNum(r.ideal)).reduce((m, r) => (m == null || r.ideal < m ? r.ideal : m), null);
+        tw.innerHTML = rows.length ? `<table class="an-tbl"><thead><tr><th>#</th><th>Driver</th><th>Best lap</th><th>Gap</th>${X.isQuali ? '<th>Q1</th><th>Q2</th><th>Q3</th>' : ''}<th>S1</th><th>S2</th><th>S3</th><th>Ideal</th><th>Potential</th><th>Laps</th></tr></thead><tbody>${rows.map((r, i) => `<tr data-n="${esc(r.n)}" class="${r.c.knockedOut ? 'an-ko' : ''}"><td>${i + 1}</td><td><i class="an-dot" style="background:${esc(r.c.color)}"></i>${esc(r.c.tla)}</td>
+          <td class="${i === 0 && isNum(r.lap) ? 'pu' : ''}">${isNum(r.lap) ? fmtLap(r.lap) : '–'}</td><td>${i && isNum(r.lap) && isNum(topLap) ? fmtDelta(r.lap - topLap) : ''}</td>
+          ${X.isQuali ? r.c.bestLaps.map((b) => `<td>${esc(b.text || '–')}</td>`).join('') : ''}
+          ${sc(r, 0)}${sc(r, 1)}${sc(r, 2)}<td class="${isNum(r.ideal) && r.ideal === bestIdeal ? 'pu' : ''}">${isNum(r.ideal) ? fmtLap(r.ideal) : '–'}</td><td>${isNum(r.ideal) && isNum(r.lap) ? (r.lap - r.ideal < 5e-4 ? '0.000' : fmtDelta(r.ideal - r.lap, 3)) : '–'}</td><td>${r.laps ?? '–'}</td></tr>`).join('')}</tbody></table>` : '<div class="an-msg" style="display:block">No timed laps yet</div>';
+        // progression
+        const ev = (B.events || []).slice().sort((a, b) => a.lap - b.lap || a.sec - b.sec);
+        let m = null; const pts = [];
+        for (const e of ev) if (m == null || e.sec < m) { m = e.sec; pts.push([e.lap, e.sec, e]); }
+        const ix = indexHistory(HIST());
+        if (!chart) chart = new Chart(host, { left: 54, xName: 'Lap', xFmt: intFmt, yFmt: fmtLap, legend: false, series: [],
+          tooltip: (s, p) => `<b>${esc(tc(p[2].num))}</b> lap ${p[0]}<div>${fmtLap(p[1])}</div>` });
+        if (pts.length) pts.push([Math.max(ix.maxLap, pts[pts.length - 1][0] + 1), m, pts[pts.length - 1][2]]);
+        const yv = pts.map((q) => q[1]);
+        chart.update({ series: [{ id: 'sb', label: 'Session best', color: COLORS.purple, step: true, markers: true, r: 3, points: pts }],
+          xDomain: [1, Math.max(ix.maxLap, 2)], yDomain: yv.length ? [Math.min(...yv) - 0.2, Math.min(Math.max(...yv), Math.min(...yv) + 4) + 0.2] : [null, null] });
+      },
+    };
+  })();
+
   // ---------------------------------------------------------- main render loop
   for (const id of Object.keys(views)) { views[id].root.classList.add('an-hidden-view'); body.appendChild(views[id].root); }
   function render(force) {
     if (el.offsetParent === null) return;
     for (const b of bar.querySelectorAll('.an-tab')) b.classList.toggle('on', b.dataset.tab === active);
-    for (const [id, v] of Object.entries(views)) v.root.classList.toggle('an-hidden-view', id !== active);
-    const st = S();
-    lapBadge.textContent = st && st.lap && st.lap.current ? `Lap ${st.lap.current}${st.lap.total ? '/' + st.lap.total : ''}` : '';
+    const st = S(), X = sessionOf(st);
+    layoutTabs(X.timed);
+    for (const b of bar.querySelectorAll('.an-tab')) b.classList.toggle('on', b.dataset.tab === active);
+    const na = X.timed && RACE_ONLY.has(active);
+    for (const [id, v] of Object.entries(views)) v.root.classList.toggle('an-hidden-view', id !== active || na);
+    naView.hidden = !na;
+    lapBadge.textContent = X.timed ? (X.partLabel || '') : st && st.lap && st.lap.current ? `Lap ${st.lap.current}${st.lap.total ? '/' + st.lap.total : ''}` : '';
+    if (na) return;
     try { views[active].render(force); } catch (e) { reportError('analytics:' + active, e); }
   }
   const schedule = rafThrottle(() => render(), 'analytics');

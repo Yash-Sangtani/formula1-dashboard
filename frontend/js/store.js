@@ -1,7 +1,7 @@
 // Shared client store: WebSocket connection + latest server messages + selection.
 // All incoming frames are normalised here so panels can rely on types (numbers are number|null, objects are objects).
 const listeners = new Set();
-const MAX_FAST = 64, MAX_RC = 200, MAX_RADIO = 60, MAX_EVENTS = 500, MAX_LAPS_PER_CAR = 600, MAX_PITS = 300;
+const MAX_CARS = 80, MAX_FAST = 64, MAX_RC = 200, MAX_RADIO = 60, MAX_EVENTS = 500, MAX_LAPS_PER_CAR = 600, MAX_PITS = 300;
 
 // ------------------------------------------------------------------ normalisation helpers
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -66,7 +66,7 @@ export function normState(m) {
   const w = isObj(m.weather) ? m.weather : {};
   s.weather = { air: num(w.air), track: num(w.track), humidity: num(w.humidity), pressure: num(w.pressure), wind: num(w.wind), windDir: num(w.windDir), rain: bool(w.rain) };
   const cars = {};
-  if (isObj(m.cars)) for (const [k, c] of Object.entries(m.cars)) { const n = normCar(k, c); if (n) cars[str(k)] = n; }
+  if (isObj(m.cars)) for (const [k, c] of Object.entries(m.cars)) { if (Object.keys(cars).length >= MAX_CARS) break; const n = normCar(k, c); if (n) cars[str(k)] = n; }
   s.cars = cars;
   const seen = new Set(), order = [];
   for (const n of arr(m.order)) { const k = str(n); if (cars[k] && !seen.has(k)) { seen.add(k); order.push(k); } }

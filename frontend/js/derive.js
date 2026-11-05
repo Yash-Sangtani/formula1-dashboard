@@ -60,3 +60,13 @@ export function classifyLaps(entries) {
   }
   return out;
 }
+
+/** Runs (stints) of a timed session: a run starts at each OUT lap or compound change. Same shape as charts.stintsFromLaps. */
+export function runsFromLaps(entries) {
+  const cls = classifyLaps(entries), out = []; let cur = null;
+  (entries || []).forEach((e, i) => {
+    if (!cur || cls[i] === 'out' || (cur.compound && e.compound && e.compound !== cur.compound)) { cur = { compound: e.compound, laps: [], start: e.lap }; out.push(cur); }
+    cur.laps.push(e); cur.end = e.lap;
+  });
+  return out;
+}
