@@ -98,3 +98,15 @@ Server entry: `python -m backend --mode sim|file|live [--file path] [--speed 1] 
 * Extra WS frame `{"type":"control","speed":..,"paused":..}` is broadcast to all clients after any control change (clients may ignore it).
 * A seek resets the engine (track geometry is kept) and the source re-sends everything up to the target; the server then pushes state/history/track to all clients immediately.
 * Leader gap fields read `"+0.000"` / `0.0` when the feed sends an empty string; lapped cars keep their raw text (`"1L"`) with `null` seconds. Empty sector cells have `text: null, sec: null`.
+
+## 6. Non-race sessions (practice / qualifying / sprint) — shapes recalled from the real feed; BE LENIENT (any field may be missing)
+Raw additions (same topics as §2):
+* `SessionInfo`: `Type` ∈ "Practice"|"Qualifying"|"Race"; `Name` ∈ "Practice 1/2/3"|"Qualifying"|"Sprint Qualifying"|"Sprint Shootout"|"Sprint"|"Race"; `Meeting.Circuit.Key`, `Number`. (Sprint: Type "Race", Name "Sprint". Sprint quali: Type "Qualifying".)
+* `TimingData` top level may carry `SessionPart` (1|2|3, quali parts), `Withheld`, `CutOffTime`. `Lines[n]` in practice/quali carry **`TimeDiffToFastest`** ("+0.234", "" for P1) and **`TimeDiffToPositionAhead`** ("+0.056") instead of `GapToLeader`/`IntervalToPositionAhead`; `BestLapTime:{Value,Lap}`; `BestLapTimes` (quali: list/dict of 3 `{Value,Lap}` per part); `KnockedOut:bool`; `Cutoff:bool`; `Stats`; `Status:int`; `NumberOfLaps` counts timed laps only. `Position` is by best lap. Cars that have not set a time have no `BestLapTime`/`Position` may be stale.
+* No `LapCount` in practice/quali. `ExtrapolatedClock.Remaining` is the session/part clock. `SessionStatus` cycles "Started"/"Aborted"(red flag)/"Finished"/"Finalised"/"Ends" per quali part. `SessionData.Series/StatusSeries` may appear (lists of `{Utc, Lap|TrackStatus|SessionStatus}`).
+* Cars in the garage: `Position` OffTrack/`InPit:true`; they can sit for 10+ minutes with no new laps.
+Output additions to `state` (existing fields keep working; for non-race sessions the engine MUST fill `gapLeader/gapLeaderSec/interval/intervalSec` from TimeDiffToFastest/TimeDiffToPositionAhead so old UI still works):
+* `session.kind`: "practice"|"qualifying"|"sprint_qualifying"|"sprint"|"race"|"unknown" (derive from Type+Name, case-insensitive; "Shootout" counts as sprint_qualifying); `session.part`: 1|2|3|null; `session.partLabel`: "Q1"|"Q2"|"Q3"|null.
+* `lap.total` is null when there is no LapCount; `lap.current` may be null/0 — UI must not show "0 / —" in non-race sessions.
+* per car: `gapFastest` (text), `gapFastestSec`, `knockedOut` bool, `cutoff` bool, `bestLaps` [{text,sec}×3 or nulls], `activity` ∈ "track"|"pit"|"out"|"garage"|"retired" (garage = in pit with no movement/ no timing change for 60 s+ in non-race sessions), `timedLaps` (= NumberOfLaps).
+* `history.laps` entries for practice/quali: include in/out laps (`sec:null` allowed) and a `kind`-agnostic shape; `pit` true for in/out laps. Overtake detection OFF for non-race sessions (order changes by lap times, not passes). "Fastest" events fire when a driver takes P1.
