@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Panels harness</title>
+<link rel="stylesheet" href="../css/panels.css">
+<style>
+  html,body{margin:0;background:#0f0f0f;color:#e8e8e8;font:13px system-ui,sans-serif}
+  .bar{display:flex;gap:8px;padding:6px 10px;background:#161616;border-bottom:1px solid #2a2a2a;flex-wrap:wrap;align-items:center}
+  .bar button{background:#222;color:#ddd;border:1px solid #3a3a3a;border-radius:4px;padding:3px 9px;cursor:pointer}
+  section{border-bottom:3px solid #e10600}
+  h2{margin:0;padding:6px 10px;font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:#888;background:#131313}
+</style></head>
+<body>
+<div class="bar"><b>Panels harness</b>
+  <span id="sel"></span>
+  <button data-sel="">clear</button><button data-sel="1">1</button><button data-sel="1,44">1+44</button><button data-sel="1,44,16,63">4 cars</button>
+  <span id="conn"></span></div>
+<section id="dd-sec"><h2>Deep dive</h2><div id="dd"></div></section>
+<section id="an-sec"><h2>Analytics</h2><div id="an"></div></section>
+<script type="module" src="harness-panels.js"></script>
+</body></html>
