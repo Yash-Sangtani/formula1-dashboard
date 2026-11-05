@@ -92,13 +92,20 @@ export function mount(el, store) {
     setClass(ref.e, 'row' + (car.retired ? ' retired' : '') + (car.inPit ? ' inpit' : ''));
   }
 
-  function updateTimed(ref, car, idx, B, ob) {
-    const hasBest = car.best && car.best.text;
+  // best lap to show: the feed's BestLapTime, else the most recent quali-part best (feeds reset BestLapTime per part)
+  function dispBest(car) {
+    if (car.best && car.best.text) return { text: car.best.text, sec: car.best.sec, overall: car.best.overall };
+    for (let i = 2; i >= 0; i--) { const b = car.bestLaps && car.bestLaps[i]; if (b && b.text) return { text: b.text, sec: b.sec, overall: false }; }
+    return null;
+  }
+  function updateTimed(ref, car, idx, B, ob, lead) {
+    const db = dispBest(car), hasBest = !!db;
     setText(ref.pos, car.pos != null && hasBest ? car.pos : hasBest ? idx + 1 : '–');
-    setText(ref.best, hasBest ? car.best.text : '—');
-    setClass(ref.best, 'c-best ' + (hasBest ? (idx === 0 || car.best.overall ? 't-purple' : '') : 't-none'));
+    setText(ref.best, hasBest ? db.text : '—');
+    setClass(ref.best, 'c-best ' + (hasBest ? (idx === 0 || db.overall ? 't-purple' : '') : 't-none'));
     const first = idx === 0 && hasBest;
-    setText(ref.gap, !hasBest ? '' : first ? 'FASTEST' : car.gapFastest || car.gapLeader || '');
+    const calc = hasBest && isNum(db.sec) && isNum(lead) && db.sec > lead ? '+' + (db.sec - lead).toFixed(3) : '';
+    setText(ref.gap, !hasBest ? '' : first ? 'FASTEST' : car.gapFastest || car.gapLeader || calc);
     setClass(ref.gap, 'c-gap' + (first ? ' lead' : ''));
     if (mode === 'quali') {
       for (let i = 0; i < 3; i++) {
@@ -127,7 +134,7 @@ export function mount(el, store) {
     if (ref.idx !== idx) { ref.idx = idx; ref.e.style.transform = `translateY(${idx * ROW_H}px)`; }
     setStyle(ref.bar, 'background', car.color || '#888');
     setText(ref.tla, car.tla || car.num);
-    if (mode === 'race') updateRace(ref, car, idx); else updateTimed(ref, car, idx, ctx.B, ctx.B.ob);
+    if (mode === 'race') updateRace(ref, car, idx); else updateTimed(ref, car, idx, ctx.B, ctx.B.ob, ctx.lead);
     ref.car = car;
   }
 
@@ -148,8 +155,9 @@ export function mount(el, store) {
     setMode(X.isQuali ? 'quali' : X.timed ? 'practice' : 'race');
     const order = s.order && s.order.length ? s.order : Object.keys(s.cars);
     empty.hidden = order.length > 0;
-    empty.textContent = /wait/i.test(store.phase || '') ? 'Waiting for the session to start...' : 'Waiting for timing data...';
-    const ctx = { B: mode === 'race' ? null : bestsOf(store.history) };
+    empty.textContent = store.phase === 'waiting' ? (store.statusMsg || 'Waiting for the session to start...') : 'Waiting for timing data...';
+    const ctx = { B: mode === 'race' ? null : bestsOf(store.history), lead: null };
+    if (mode !== 'race') for (const num of order) { const c = s.cars[num]; const d = c && dispBest(c); if (d && isNum(d.sec)) { ctx.lead = d.sec; break; } }
     const seen = new Set();
     let firstCut = -1, firstKo = -1;
     order.forEach((num, i) => {
@@ -172,7 +180,7 @@ export function mount(el, store) {
   function onReset() {
     for (const ref of rows.values()) ref.e.remove();
     rows.clear(); body.style.height = '0'; empty.hidden = false; lineCut.hidden = lineKo.hidden = true;
-    empty.textContent = /wait/i.test(store.phase || '') ? 'Waiting for the session to start...' : 'Waiting for timing data...';
+    empty.textContent = store.phase === 'waiting' ? (store.statusMsg || 'Waiting for the session to start...') : 'Waiting for timing data...';
   }
   function onFast() {
     if (!store.state || mode !== 'race') return;

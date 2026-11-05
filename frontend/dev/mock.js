@@ -105,7 +105,7 @@ export function run(store, kind = 'race') {
   };
 
   store.send = (o) => { if (o.speed) speed = o.speed; if (o.paused != null) paused = o.paused; };
-  store.conn = 'open'; store.ingest({ type: 'hello', mode: 'sim', replay: true, phase: 'active', info: { speed: 1 } });
+  store.conn = 'open'; store.ingest({ type: 'hello', mode: 'sim', replay: true, phase: 'live', info: { speed: 1 } });
   store.conn = 'open'; store.ingest({ type: 'track', track }); store.emit('conn');
   step(0.01);
   let last = performance.now(), n = 0;

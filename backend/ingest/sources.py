@@ -981,9 +981,10 @@ class LiveSource(Source):
             return "Live"
         if phase == "ended":
             return "Session finished (%s). Leave this running if another session follows." % self.session_status
-        if r.status in ("starting", "authenticating", "connecting"):
+        receiving = bool(r.line_seen) and time.monotonic() - r.line_seen < 10.0  # lines flowing: obviously connected
+        if not receiving and r.status in ("starting", "authenticating", "connecting"):
             return "Connecting to F1 live timing..."
-        if r.status == "reconnecting" or not r.connected:
+        if not receiving and (r.status == "reconnecting" or not r.connected):
             return "Connection to F1 live timing lost - reconnecting..." if r.ever_data or self.lines else "Connecting to F1 live timing..."
         return "Connected - waiting for the session to start%s" % sess
 

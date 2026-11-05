@@ -148,7 +148,7 @@ export function run(store, kind = 'fp', opts = {}) {
   };
   store.send = (o) => { if (o.speed) speed = o.speed; if (o.paused != null) paused = o.paused; };
   store.conn = 'open';
-  store.ingest({ type: 'hello', mode: 'sim', replay: true, phase: 'active', info: { speed: 1 } });
+  store.ingest({ type: 'hello', mode: 'sim', replay: true, phase: 'live', info: { speed: 1 } });
   store.conn = 'open'; store.ingest({ type: 'track', track }); store.emit('conn');
   const warm = opts.warm == null ? 8 : opts.warm; for (let i = 0; i < warm * 4; i++) step(0.25);
   let last = performance.now(), n = 0;

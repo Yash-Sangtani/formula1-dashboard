@@ -38,5 +38,5 @@ export const KIND_LABEL = {
 };
 
 export function isWaiting(store) {
-  return /wait|idle|none|no.?session/i.test(String(store.phase || ''));
+  return String(store.phase || '') === 'waiting';
 }

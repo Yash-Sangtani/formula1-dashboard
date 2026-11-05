@@ -89,10 +89,11 @@ export function mount(el, store) {
   function onNoState() {
     clk = null; tickClock();
     const waiting = isWaiting(store);
-    setText(R.meeting, waiting ? 'No session running' : 'Waiting for data');
-    setText(R.session, waiting ? 'The dashboard will start by itself when a session begins' : '');
+    const errd = store.phase === 'error';
+    setText(R.meeting, errd ? 'Feed problem' : waiting ? 'No session running' : store.phase === 'ended' ? 'Feed ended' : 'Waiting for data');
+    setText(R.session, errd ? store.statusErr || store.statusMsg : waiting ? (store.statusMsg || 'The dashboard will start by itself when a session begins') : store.statusMsg || '');
     R.lapBox.hidden = false; R.partBox.hidden = true; setText(R.cur, '-'); setText(R.tot, '');
-    setClass(R.flag, 'hd-flag flag-wait'); setText(R.flag, waiting ? 'WAITING FOR SESSION' : 'WAITING FOR DATA');
+    setClass(R.flag, 'hd-flag flag-wait'); setText(R.flag, errd ? 'FEED ERROR' : waiting ? 'WAITING FOR SESSION' : 'WAITING FOR DATA');
     document.body.dataset.flag = 'wait'; document.body.dataset.kind = 'unknown';
   }
   function tickClock() {
@@ -137,7 +138,8 @@ export function mount(el, store) {
       if (replay.available() && replay.paused) { setText(R.age, 'paused'); R.age.className = 'age idle'; return; }
       const a = (performance.now() - store.lastMsgAt) / 1000;
       const idle = se && /final|ends/i.test(se.status || '');
-      let t = a < 5 ? '' : 'No data for ' + Math.round(a) + ' s';
+      const ended = idle || store.phase === 'ended';
+      let t = a < 5 || ended ? '' : 'No data for ' + Math.round(a) + ' s';
       if (!t && store.feedAge != null && store.feedAge > 60 && !idle) t = 'Feed quiet ' + Math.round(store.feedAge) + ' s';
       setText(R.age, t);
       R.age.className = 'age' + (!t ? '' : idle ? ' idle' : a > 30 || (store.feedAge || 0) > 120 ? ' bad' : ' warn');

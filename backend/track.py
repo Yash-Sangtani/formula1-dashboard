@@ -610,6 +610,11 @@ class OfficialLayoutFallback:
         self._jobs: Dict[Tuple[str, int], Dict[str, Any]] = {}
         self.last_result: Optional[str] = None
 
+    def forget(self) -> None:
+        """Drop all job state (after a manual track reset a new lookup is allowed)."""
+        with self._lock:
+            self._jobs.clear()
+
     def state(self, key: Any, year: Any) -> Optional[str]:
         j = self._jobs.get((str(key), int(year)))
         return j["state"] if j else None

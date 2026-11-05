@@ -7,7 +7,12 @@ export function mount(el, store) {
   let since = performance.now();
   function render() {
     const c = store.conn;
-    if (c === 'open') { b.hidden = true; since = performance.now(); return; }
+    if (c === 'open') {
+      since = performance.now();
+      if (store.phase === 'error' && store.statusErr) { b.hidden = false; b.className = ''; setText(b, 'Feed error: ' + store.statusErr + ' (retrying automatically)'); }
+      else b.hidden = true;
+      return;
+    }
     const showAfter = c === 'connecting' && !store.hello ? 1500 : 0;
     if (performance.now() - since < showAfter) { b.hidden = true; return; }
     b.hidden = false;

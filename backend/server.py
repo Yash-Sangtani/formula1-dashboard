@@ -10,7 +10,7 @@ import time
 from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -154,12 +154,42 @@ class Client:
                 pass
 
 
+_NO_CIRCUIT = (None, "", 0, "0")
+
+
+def session_context(eng: RaceEngine) -> Tuple[Any, Optional[int], Any]:
+    """(circuit key, season year, meeting key) from the engine's raw ``SessionInfo`` (any may be None)."""
+    try:
+        si = (eng.raw or {}).get("SessionInfo")
+    except Exception:  # noqa: BLE001
+        return None, None, None
+    if not isinstance(si, dict):
+        return None, None, None
+    meeting = si.get("Meeting") if isinstance(si.get("Meeting"), dict) else {}
+    circuit = meeting.get("Circuit") if isinstance(meeting.get("Circuit"), dict) else {}
+    ckey = circuit.get("Key")
+    year: Optional[int] = None
+    m = re.match(r"\s*(\d{4})/", str(si.get("Path") or ""))
+    if m:
+        year = int(m.group(1))
+    else:
+        for k in ("StartDate", "EndDate"):
+            m = re.match(r"\s*(\d{4})-", str(si.get(k) or ""))
+            if m:
+                year = int(m.group(1))
+                break
+    return (None if ckey in _NO_CIRCUIT else ckey), year, meeting.get("Key")
+
+
 class ServerState:
-    def __init__(self, source, engine: RaceEngine, mode: str, retry_live: bool):
+    def __init__(self, source, engine: RaceEngine, mode: str, retry_live: bool, max_clients: int = MAX_CLIENTS,
+                 fallback: Optional[OfficialLayoutFallback] = None):
         self.source = source
         self.engine = engine
         self.mode = mode
         self.retry_live = retry_live
+        self.max_clients = max_clients
+        self.fallback = fallback
         self.clients: set[Client] = set()
         self.error: Optional[str] = None
         self.ended = False
@@ -167,11 +197,16 @@ class ServerState:
         self.last_msg_mono: Optional[float] = None
         self.msg_times: deque = deque(maxlen=4096)
         self.total_msgs = 0
+        self.apply_errors = 0
+        self.pump_restarts = 0
+        self.rejected_clients = 0
         self.epoch = 0            # bumps on seek / reset to force full resend
         self.tasks: list = []
         self.lock = asyncio.Lock()
         self.seeking = False
         self.restart = asyncio.Event()
+        self.circuit: Tuple[Any, Optional[int]] = (None, None)
+        self.last_fallback_tick = 0.0
 
     @property
     def replay(self) -> bool:
@@ -198,18 +233,53 @@ class ServerState:
                     info[k] = getattr(c, k)
         return info
 
+    def current_error(self, info: Optional[dict] = None) -> Optional[str]:
+        info = self.control_info() if info is None else info
+        return self.error or info.get("error")
+
+    def phase(self, info: Optional[dict] = None) -> str:
+        """``waiting`` (connected / starting, nothing to show yet), ``live``, ``ended`` or ``error``."""
+        info = self.control_info() if info is None else info
+        p = info.get("phase")
+        if p in PHASES:
+            return p
+        if self.error:
+            return "error"
+        if self.ended:
+            return "ended"
+        return "waiting" if self.total_msgs == 0 else "live"
+
+    def status_text(self, info: Optional[dict] = None) -> str:
+        info = self.control_info() if info is None else info
+        ph = self.phase(info)
+        if info.get("message"):
+            return str(info["message"])
+        if ph == "error":
+            return str(self.current_error(info) or "error")
+        return {"waiting": "Waiting for data...", "live": "Live" if self.mode == "live" else "Playing",
+                "ended": "Finished"}[ph]
+
+    def status_frame(self, info: Optional[dict] = None) -> dict:
+        info = self.control_info() if info is None else info
+        ph = self.phase(info)
+        return {"type": "status", "phase": ph, "waiting": ph == "waiting", "message": self.status_text(info),
+                "error": self.current_error(info), "mode": self.mode}
+
     def hello(self) -> dict:
-        return {"type": "hello", "mode": self.mode, "replay": self.replay, "info": self.control_info()}
+        info = self.control_info()
+        ph = self.phase(info)
+        return {"type": "hello", "mode": self.mode, "replay": self.replay, "info": info, "phase": ph,
+                "waiting": ph == "waiting", "message": self.status_text(info), "error": self.current_error(info)}
 
     def broadcast(self, kind: str, text: str) -> None:
-        for c in self.clients:
+        for c in list(self.clients):
             c.put(kind, text)
 
     def broadcast_fast(self, frame: dict) -> None:
         if not self.clients:
             return
         text = _safe_dumps(frame)
-        for c in self.clients:
+        for c in list(self.clients):
             c.put_fast(frame, text)
 
 
@@ -225,14 +295,78 @@ def _infer_mode(source) -> str:
     return "file"
 
 
+def reset_track(st: ServerState, reason: str = "api") -> None:
+    """Forget the track (and every car's projection onto it) so a new one is learned / fetched.  Safe to call any time."""
+    eng = st.engine
+    eng.tb.reset()
+    for d in getattr(eng, "drivers", {}).values():
+        for attr in ("progress", "hint"):
+            if hasattr(d, attr):
+                try:
+                    setattr(d, attr, None)
+                except Exception:  # noqa: BLE001
+                    pass
+    if st.fallback is not None:
+        st.fallback.forget()
+    eng.rev += 1
+    log.info("track reset (%s)", reason)
+
+
+def track_tick(st: ServerState) -> None:
+    """Called ~4 Hz: keep the TrackBuilder in step with the circuit announced by SessionInfo and, while no
+    track exists, let the official-layout fallback try to supply one.  Never raises."""
+    try:
+        eng = st.engine
+        ckey, year, _ = session_context(eng)
+        if ckey is None:
+            return
+        tb = eng.tb
+        if tb.set_context(ckey, year):  # a different circuit than the samples/track belong to
+            reset_track_side_effects(st)
+        st.circuit = (ckey, year)
+        now = time.monotonic()
+        if st.fallback is not None and tb.track is None and year is not None and now - st.last_fallback_tick >= 1.5:
+            st.last_fallback_tick = now
+            res = st.fallback.tick(tb, ckey, year)
+            if res == "accepted":
+                project = getattr(eng, "_project", None)
+                for d in getattr(eng, "drivers", {}).values():
+                    if callable(project):
+                        try:
+                            project(d)
+                        except Exception:  # noqa: BLE001
+                            pass
+                eng.rev += 1
+    except Exception:  # noqa: BLE001
+        log.exception("track tick failed")
+
+
+def reset_track_side_effects(st: ServerState) -> None:
+    eng = st.engine
+    for d in getattr(eng, "drivers", {}).values():
+        for attr in ("progress", "hint"):
+            if hasattr(d, attr):
+                try:
+                    setattr(d, attr, None)
+                except Exception:  # noqa: BLE001
+                    pass
+    eng.rev += 1
+
+
 async def _pump(st: ServerState):
-    """Source -> engine. Retries for live sources; stays idle (serving last state) when a replay ends."""
+    """Source -> engine.  Live: never gives up (re-opens the source with back-off if it ever ends or raises); replay:
+    stays idle (serving the last state) when the stream ends.  A bad message never stops the stream."""
     backoff = 2.0
     while True:
         try:
             n = 0
             async for msg in st.source.messages():
-                st.engine.apply(msg)
+                try:
+                    st.engine.apply(msg)
+                except Exception:  # noqa: BLE001 - the engine is supposed not to raise; belt and braces
+                    st.apply_errors += 1
+                    if st.apply_errors <= 5:
+                        log.exception("engine.apply raised")
                 st.total_msgs += 1
                 st.msg_times.append(time.monotonic())
                 st.last_msg_mono = time.monotonic()
@@ -263,29 +397,48 @@ async def _broadcaster(st: ServerState):
     eng = st.engine
     last_rev = -1
     last_hist_rev = -1
-    last_track_ver = -1
+    last_track_sig: Any = None
+    last_track_nonnull = False
     last_state_t = 0.0
     last_hist_t = 0.0
+    last_status_sig: Any = None
+    tick = 0
     epoch = st.epoch
     period = 1.0 / FAST_HZ
     while True:
         await asyncio.sleep(period)
+        tick += 1
         try:
             now = time.monotonic()
             force = epoch != st.epoch
             epoch = st.epoch
             if force:
-                last_rev = last_hist_rev = last_track_ver = -1
+                last_rev = last_hist_rev = -1
+                last_track_sig = None
                 last_state_t = last_hist_t = 0.0
+                last_status_sig = None
+            track_tick(st)
+            has_track = eng.tb.track is not None
+            sig = (id(eng.tb), eng.track_version, has_track)
+            if sig != last_track_sig:  # tracked even with no viewers: a later reset must still reach those who joined after the build
+                if st.clients:
+                    if has_track:
+                        st.broadcast("track", _safe_dumps({"type": "track", "track": eng.track_dict()}))
+                    elif last_track_nonnull:  # reset: tell viewers to drop the old outline
+                        st.broadcast("track", _safe_dumps({"type": "track", "track": None}))
+                last_track_sig, last_track_nonnull = sig, has_track
             if not st.clients:
                 eng.fast_delta()  # keep the dirty set from growing
                 continue
+            if tick % 4 == 0 or force:
+                info = st.control_info()
+                sig = (st.phase(info), st.status_text(info), st.current_error(info))
+                if sig != last_status_sig:
+                    last_status_sig = sig
+                    st.broadcast("status", _safe_dumps(st.status_frame(info)))
             f = eng.fast_delta()
             if f is not None:
                 st.broadcast_fast(f)
-            if eng.track_version != last_track_ver and eng.tb.track is not None:
-                last_track_ver = eng.track_version
-                st.broadcast("track", _safe_dumps({"type": "track", "track": eng.track_dict()}))
             if eng.rev != last_rev and now - last_state_t >= STATE_MIN_INTERVAL:
                 last_rev, last_state_t = eng.rev, now
                 st.broadcast("state", _safe_dumps(eng.state()))
@@ -296,6 +449,20 @@ async def _broadcaster(st: ServerState):
             raise
         except Exception:
             log.exception("broadcaster error")
+
+
+async def _supervised(name: str, st: ServerState, fn):
+    """Run ``fn(st)`` forever: if it ever dies with an exception, log and start it again."""
+    while True:
+        try:
+            await fn(st)
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            st.pump_restarts += 1
+            log.exception("task %s crashed; restarting in 1s", name)
+            await asyncio.sleep(1.0)
 
 
 async def _handle_control(st: ServerState, data: dict) -> dict:
@@ -335,15 +502,35 @@ async def _handle_control(st: ServerState, data: dict) -> dict:
     return st.control_info()
 
 
+def _recording_info(info: dict) -> Optional[dict]:
+    path = info.get("recording")
+    if not path:
+        return None
+    size = info.get("recordingBytes")
+    if size is None:
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            size = None
+    return {"path": path, "bytes": size, "diskFreeMB": info.get("diskFreeMB")}
+
+
 def create_app(source, *, mode: Optional[str] = None, engine: Optional[RaceEngine] = None,
-               frontend_dir: Optional[Path] = None, dev: bool = True, retry_live: bool = True) -> FastAPI:
+               frontend_dir: Optional[Path] = None, dev: bool = True, retry_live: bool = True,
+               max_clients: int = MAX_CLIENTS, track_fallback: Any = None) -> FastAPI:
+    """``track_fallback``: ``None`` = automatic (official circuit layout lookup in live/file mode, unless env
+    ``F1_NO_TRACK_FALLBACK`` is set), ``False`` = off, an :class:`OfficialLayoutFallback` = use that (tests)."""
     mode = mode or _infer_mode(source)
     eng = engine or RaceEngine()
-    st = ServerState(source, eng, mode, retry_live)
+    if track_fallback is None:
+        track_fallback = (OfficialLayoutFallback() if mode in ("live", "file") and not os.environ.get("F1_NO_TRACK_FALLBACK")
+                          else False)
+    st = ServerState(source, eng, mode, retry_live, max_clients=max_clients, fallback=track_fallback or None)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        st.tasks = [asyncio.create_task(_pump(st), name="pump"), asyncio.create_task(_broadcaster(st), name="broadcast")]
+        st.tasks = [asyncio.create_task(_supervised("pump", st, _pump), name="pump"),
+                    asyncio.create_task(_supervised("broadcast", st, _broadcaster), name="broadcast")]
         try:
             yield
         finally:
@@ -366,7 +553,7 @@ def create_app(source, *, mode: Optional[str] = None, engine: Optional[RaceEngin
 
     # ---------------------------------------------------------------- REST
     def json_resp(obj):
-        return JSONResponse(content=json.loads(_safe_dumps(obj)))
+        return Response(content=_safe_dumps(obj), media_type="application/json")
 
     @app.get("/api/state")
     async def api_state():
@@ -380,19 +567,33 @@ def create_app(source, *, mode: Optional[str] = None, engine: Optional[RaceEngin
     async def api_track():
         return json_resp({"type": "track", "track": eng.track_dict()})
 
+    @app.post("/api/track/reset")
+    async def api_track_reset():
+        """Forget the current track outline (wrong/odd track, or a new circuit) and learn/fetch a fresh one."""
+        reset_track(st, "api")
+        st.epoch += 1
+        return json_resp({"ok": True, "trackVersion": eng.track_version})
+
     @app.get("/healthz")
     async def healthz():
         return json_resp({"ok": True})
 
     @app.get("/api/status")
     async def api_status():
+        info = st.control_info()
         age = None if st.last_msg_mono is None else round(time.monotonic() - st.last_msg_mono, 2)
+        ph = st.phase(info)
+        tr = eng.tb.track
         return json_resp({
-            "mode": st.mode, "replay": st.replay, "clients": len(st.clients),
+            "mode": st.mode, "replay": st.replay, "phase": ph, "waiting": ph == "waiting", "message": st.status_text(info),
+            "clients": len(st.clients), "maxClients": st.max_clients, "rejectedClients": st.rejected_clients,
             "msgsPerSec": st.msgs_per_sec(), "totalMsgs": st.total_msgs, "lastMessageAgeSec": age,
-            "ended": st.ended, "error": st.error, "uptimeSec": round(time.time() - st.started_at, 1),
-            "control": st.control_info(), "engine": eng.stats(), "trackVersion": eng.track_version,
-            "utc": eng.utc,
+            "ended": st.ended, "error": st.current_error(info), "uptimeSec": round(time.time() - st.started_at, 1),
+            "recording": _recording_info(info),
+            "control": info, "engine": eng.stats(), "trackVersion": eng.track_version,
+            "track": {"built": tr is not None, "source": getattr(tr, "source", None), "resets": getattr(eng.tb, "resets", 0),
+                      "circuitKey": st.circuit[0], "year": st.circuit[1]},
+            "applyErrors": st.apply_errors, "taskRestarts": st.pump_restarts, "utc": eng.utc,
         })
 
     @app.post("/api/control")
@@ -410,20 +611,33 @@ def create_app(source, *, mode: Optional[str] = None, engine: Optional[RaceEngin
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket):
         await ws.accept()
+        if len(st.clients) >= st.max_clients:
+            st.rejected_clients += 1
+            try:
+                await ws.send_text(_safe_dumps({"type": "error", "message": "too many viewers, try again later"}))
+                await ws.close(code=1013)
+            except Exception:  # noqa: BLE001
+                pass
+            return
         client = Client(ws)
         try:
-            await ws.send_text(_safe_dumps(st.hello()))
-            await ws.send_text(_safe_dumps(eng.state()))
+            # Build the whole first snapshot synchronously and register the client in the same step, so nothing
+            # broadcast in between can be missed; the writer task then sends it in order.
+            client.put("hello", _safe_dumps(st.hello()))
+            client.put("state", _safe_dumps(eng.state()))
             if eng.tb.track is not None:
-                await ws.send_text(_safe_dumps({"type": "track", "track": eng.track_dict()}))
-            await ws.send_text(_safe_dumps(eng.history()))
+                client.put("track", _safe_dumps({"type": "track", "track": eng.track_dict()}))
+            client.put("history", _safe_dumps(eng.history()))
         except Exception:
+            log.exception("could not build the initial snapshot")
             return
         st.clients.add(client)
         wtask = asyncio.create_task(client.writer())
         try:
             while True:
                 raw = await ws.receive_text()
+                if len(raw) > MAX_CLIENT_MSG:
+                    continue
                 try:
                     msg = json.loads(raw)
                 except ValueError:

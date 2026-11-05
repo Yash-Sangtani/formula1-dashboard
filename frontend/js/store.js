@@ -131,7 +131,8 @@ function normTrack(t) {
 export const store = {
   state: null, fast: {}, track: null, history: null, hello: null, control: null,
   conn: 'connecting',
-  phase: null,            // 'waiting' | 'active' ... as reported by the backend (hello/state/api/status)
+  phase: null,            // 'waiting' | 'live' | 'ended' | 'error' as reported by the backend (hello / status frames / api/status)
+  statusMsg: '', statusErr: '',
   lastMsgAt: 0,           // performance.now() of the last frame of any kind
   lastStateAt: 0,
   feedAge: null,          // upstream feed age in seconds, from /api/status (null if unknown)
@@ -153,6 +154,11 @@ export const store = {
     this.state = null; this.fast = {}; this.history = null; this.control = null;
     this.emit('reset');
   },
+  setStatus(m) {
+    if (m.phase != null) this.phase = str(m.phase);
+    if ('message' in m) this.statusMsg = str(m.message);
+    if ('error' in m) this.statusErr = m.error ? str(m.error) : '';
+  },
   /** Feed a decoded server frame (also used by mocks and the fuzz test). */
   ingest(m) {
     if (!isObj(m)) return;
@@ -160,8 +166,9 @@ export const store = {
     switch (m.type) {
       case 'hello':
         this.reset();
-        this.hello = m; if (m.phase != null) this.phase = str(m.phase);
+        this.hello = m; this.setStatus(m);
         this.emit('conn'); break;
+      case 'status': this.setStatus(m); this.emit('conn'); break;
       case 'state': {
         const s = normState(m); if (!s) break;
         if (s.utc == null) s.utc = this.state && this.state.utc != null ? this.state.utc : Date.now() / 1000;
@@ -228,7 +235,7 @@ function scheduleRetry() {
 
 async function pollStatus(first) {
   clearTimeout(statusTimer);
-  const next = () => { statusTimer = setTimeout(pollStatus, store.state && !/wait/i.test(store.phase || '') ? 8000 : 3000); };
+  const next = () => { statusTimer = setTimeout(pollStatus, store.state && store.phase !== 'waiting' ? 8000 : 3000); };
   if (store.conn !== 'open') { next(); return; }
   try {
     const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 4000);
@@ -237,7 +244,7 @@ async function pollStatus(first) {
     if (r.ok) {
       const j = await r.json(); statusFails = 0;
       if (j && typeof j === 'object') {
-        if (j.phase != null && String(j.phase) !== store.phase) { store.phase = String(j.phase); store.emit('conn'); }
+        if ((j.phase != null && String(j.phase) !== store.phase) || ('message' in j && str(j.message) !== store.statusMsg) || ('error' in j && (j.error ? str(j.error) : '') !== store.statusErr)) { store.setStatus(j); store.emit('conn'); }
         store.feedAge = num(j.lastMessageAgeSec);
         if (j.control && store.control == null) { store.control = { speed: num(j.control.speed), paused: j.control.paused }; }
         store.emit('status');
