@@ -274,16 +274,16 @@ async def _handle_control(st: ServerState, data: dict) -> dict:
         if target is not None:
             async with st.lock:
                 st.seeking = True
+                was_idle = bool(st.ended or st.error)
                 try:
                     st.engine.reset(keep_track=True)
-                    st.ended = False
                     await c.seek(target)
                 except Exception as e:
                     log.exception("seek failed")
                     st.error = "seek failed: %s" % e
                 finally:
                     st.seeking = False
-                if st.ended or st.error:
+                if was_idle:
                     st.restart.set()
                 st.epoch += 1
     return st.control_info()

@@ -250,7 +250,11 @@ class TrackBuilder:
         ratio = np.where(tot >= 2, self._drs_open / np.maximum(tot, 1), 0.0)
         # smooth a little
         ratio = np.convolve(np.concatenate([ratio[-3:], ratio, ratio[:3]]), np.ones(3) / 3, mode="same")[3:-3]
-        on = ratio > 0.35
+        peak = float(ratio.max())
+        if peak <= 0:
+            return
+        # DRS only opens for cars within 1s of another, so the absolute ratio is low: threshold relative to the peak
+        on = ratio >= max(0.2 * peak, 0.01)
         zones: List[List[float]] = []
         n = DRS_BINS
         if on.all() or not on.any():

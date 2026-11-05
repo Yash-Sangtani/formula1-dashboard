@@ -87,3 +87,14 @@ Server entry: `python -m backend --mode sim|file|live [--file path] [--speed 1] 
 `store.state` `store.fast` `store.track` `store.history` `store.hello` (latest messages; cars merged),
 `store.selected` (Set of car nums; first = primary), `store.subscribe(fn)`→unsub (fn(kind) kind∈'state'|'fast'|'track'|'history'|'selection'|'conn'),
 `store.select(num, {additive})`, `store.send(obj)`, `store.conn` ('connecting'|'open'|'closed'). Panels: `export function mount(el, store)`.
+
+## 5. Clarifications added by the engine/server implementation (additive, no breaking changes)
+* `brake` (in `tel` and `fast`) is normalised to `0` or `100` (same scale as throttle), whatever the raw 0/1 or 0/100 feed sent.
+* `drsZones` entries may wrap over the start/finish line (`startFrac > endFrac`, e.g. `[0.96, 0.04]`). `sectors` = the two boundary fractions.
+  The server re-sends `{"type":"track"}` whenever the track is (re)built or its DRS zones / sector fractions change.
+* `track.length` is metres (raw position units are decimetres; the builder rescales when the loop is > 15000 raw units).
+* `GET /api/track` returns the same envelope as the WS frame: `{"type":"track","track":{...}|null}`.
+* `GET /api/status` -> `{mode, replay, clients, msgsPerSec, totalMsgs, lastMessageAgeSec, ended, error, uptimeSec, control, engine:{drivers,laps,events,pitStops,radio,raceControl,msgs,errors,ignored,trackBuilt,utc,topics}, trackVersion, utc}`.
+* Extra WS frame `{"type":"control","speed":..,"paused":..}` is broadcast to all clients after any control change (clients may ignore it).
+* A seek resets the engine (track geometry is kept) and the source re-sends everything up to the target; the server then pushes state/history/track to all clients immediately.
+* Leader gap fields read `"+0.000"` / `0.0` when the feed sends an empty string; lapped cars keep their raw text (`"1L"`) with `null` seconds. Empty sector cells have `text: null, sec: null`.
