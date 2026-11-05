@@ -1,5 +1,6 @@
 import { h, fmtUtc, ls } from '../util.js';
 
+const MAX_SHOWN = 120;
 const FILTERS = [['all', 'All'], ['flag', 'Flags'], ['sc', 'SC'], ['drs', 'DRS'], ['other', 'Other']];
 
 function kind(m) {
@@ -32,15 +33,20 @@ export function mount(el, store) {
   sync();
   let sig = '';
   function render(force) {
-    const s = store.state; if (!s) return;
+    const s = store.state;
+    if (!s) { if (sig !== 'none') { sig = 'none'; list.textContent = ''; list.append(h('div', { class: 'empty' }, 'No messages')); } return; }
     const msgs = s.raceControl || [];
-    const nsig = filter + '|' + msgs.length + '|' + (msgs[0] ? msgs[0].utc + msgs[0].message : '');
+    const nsig = filter + '|' + msgs.length + '|' + (msgs[0] ? msgs[0].utc + msgs[0].message : '') + '|' + (msgs[msgs.length - 1] ? msgs[msgs.length - 1].message : '');
     if (!force && nsig === sig) return; sig = nsig;
     list.textContent = '';
     const frag = document.createDocumentFragment();
+    let shown = 0, hidden = 0;
     for (const m of msgs) {
       if (filter !== 'all' && kind(m) !== filter) continue;
+      if (shown >= MAX_SHOWN) { hidden++; continue; }
+      shown++;
       const car = m.num && s.cars && s.cars[m.num];
+      const sel = m.num && store.selected.has(String(m.num));
       frag.append(h('div', { class: 'rc-item f-' + flagCls(m) + (m.num && store.selected.has(String(m.num)) ? ' sel' : '') },
         h('span', { class: 'flagicon' }),
         h('div', { class: 'rc-main' },
@@ -49,9 +55,10 @@ export function mount(el, store) {
             car ? h('span', { class: 'tla', style: { background: car.color } }, car.tla) : null),
           h('div', { class: 'rc-msg' }, m.message || ''))));
     }
+    if (hidden) frag.append(h('div', { class: 'rc-more' }, '+ ' + hidden + ' older messages not shown'));
     if (!frag.childNodes.length) frag.append(h('div', { class: 'empty' }, 'No messages'));
     list.append(frag);
   }
-  store.subscribe((k) => { if (k === 'state') render(); else if (k === 'selection') render(true); });
+  store.subscribe((k) => { if (k === 'state' || k === 'reset') render(); else if (k === 'selection') render(true); });
   render();
 }

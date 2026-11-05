@@ -13,7 +13,8 @@ const TEAMS = [
 ];
 const fmt = (s) => { const m = Math.floor(s / 60); return `${m}:${(s - m * 60).toFixed(3).padStart(6, '0')}`; };
 
-export function run(store) {
+export function run(store, kind = 'race') {
+  const sprint = kind === 'sprint';
   const LAP = 12; // seconds per lap in the mock (compressed)
   const track = (() => {
     const pts = [];
@@ -90,8 +91,8 @@ export function run(store) {
     });
     const rem = 5400 - simT;
     return {
-      type: 'state', utc: tNow + simT, session: { name: 'Race', meeting: 'Mock Grand Prix', type: 'Race', status: 'Started' },
-      clock: { remainingSec: rem, extrapolating: true, elapsedSec: simT }, lap: { current: Math.floor(lapOf()) + 1, total: 57 },
+      type: 'state', utc: tNow + simT, session: { name: sprint ? 'Sprint' : 'Race', meeting: 'Mock Grand Prix', type: 'Race', status: 'Started', kind: sprint ? 'sprint' : 'race', part: null, partLabel: null },
+      clock: { remainingSec: rem, extrapolating: true, elapsedSec: simT }, lap: { current: Math.floor(lapOf()) + 1, total: sprint ? 19 : 57 },
       trackStatus: { code: '1', label: flag, flag: flag }, weather: { air: 28.1, track: 36.4, humidity: 41, pressure: 1010, wind: 2.3, windDir: 120, rain: simT > 100 },
       order: order.map((c) => c.num), cars: cs, raceControl: rc.slice(0, 100), radio: radio.slice(0, 30),
       records: { fastestLap: fl, topSpeed: null }, pitStops: [],
@@ -104,18 +105,17 @@ export function run(store) {
   };
 
   store.send = (o) => { if (o.speed) speed = o.speed; if (o.paused != null) paused = o.paused; };
-  store.hello = { type: 'hello', mode: 'sim', replay: true, info: { speed: 1 } };
-  store.conn = 'open'; store.track = track;
-  step(0.01); store.emit('conn'); store.emit('track');
+  store.conn = 'open'; store.ingest({ type: 'hello', mode: 'sim', replay: true, phase: 'active', info: { speed: 1 } });
+  store.conn = 'open'; store.ingest({ type: 'track', track }); store.emit('conn');
+  step(0.01);
   let last = performance.now(), n = 0;
   setInterval(() => {
     const now = performance.now(), dt = (now - last) / 1000; last = now;
     if (!paused) step(dt * speed);
     const m = fastMsg();
-    for (const [k, v] of Object.entries(m.cars)) store.fast[k] = { ...(store.fast[k] || {}), ...v };
-    store.emit('fast');
-    if (n++ % 4 === 0) { store.state = stateMsg(); store.emit('state'); }
+    store.ingest(m);
+    if (n++ % 4 === 0) store.ingest(stateMsg());
   }, 250);
-  store.state = stateMsg(); store.emit('state');
+  store.ingest(stateMsg());
   window.__mock = { step, get simT() { return simT; } };
 }

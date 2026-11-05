@@ -1,13 +1,17 @@
-import { ls, textOn } from '../util.js';
+import { ls } from '../util.js';
+import { sessionOf } from '../session.js';
+import { activityOf } from '../derive.js';
+import { esc } from '../charts.js';
+import { reportError } from '../store.js';
 
 export function mount(el, store) {
   el.classList.add('map');
   el.innerHTML = `<canvas></canvas>
-    <div class="map-opts"><button data-o="labels">Labels</button><button data-o="trails">Trails</button><button data-o="follow">Follow</button></div>
+    <div class="map-opts"><button data-o="labels">Labels</button><button data-o="trails">Trails</button><button data-o="follow">Follow</button><button data-o="onTrack" title="Practice / qualifying: hide cars in the garage or pit lane">On track</button></div>
     <div class="map-tip" hidden></div><div class="map-empty">Waiting for track data...</div>`;
   const cv = el.querySelector('canvas'), ctx = cv.getContext('2d');
   const tip = el.querySelector('.map-tip'), emptyEl = el.querySelector('.map-empty');
-  const opts = Object.assign({ labels: true, trails: true, follow: false }, ls.get('f1.map', {}));
+  const opts = Object.assign({ labels: true, trails: true, follow: false, onTrack: true }, ls.get('f1.map', {}));
   const optBtns = [...el.querySelectorAll('.map-opts button')];
   const syncOpts = () => optBtns.forEach((b) => b.classList.toggle('on', !!opts[b.dataset.o]));
   optBtns.forEach((b) => b.onclick = () => { opts[b.dataset.o] = !opts[b.dataset.o]; ls.set('f1.map', opts); syncOpts(); });
@@ -118,6 +122,11 @@ export function mount(el, store) {
     }
     a.t = now; a.lx = d.x; a.ly = d.y; a.lp = d.progress;
   }
+  function prune() {
+    const cars = (store.state && store.state.cars) || {};
+    for (const k of Object.keys(anim)) if (!(k in cars) && !(k in store.fast)) delete anim[k];
+    for (const k of Object.keys(trails)) if (!(k in cars)) delete trails[k];
+  }
   function ingestAll(useState) {
     const now = performance.now();
     for (const [num, f] of Object.entries(store.fast)) ingest(num, f, now);
@@ -133,8 +142,11 @@ export function mount(el, store) {
   let last = performance.now(), trailT = 0;
   function frame(now) {
     requestAnimationFrame(frame);
-    const dt = Math.min(100, now - last); last = now;
-    if (!W || !H) return;
+    const dt = Math.min(100, Math.max(0, now - last)); last = now;
+    if (!W || !H || document.hidden) return;
+    try { draw(now, dt); } catch (e) { reportError('trackmap', e); }
+  }
+  function draw(now, dt) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
     if (!geo) return;
@@ -213,21 +225,28 @@ export function mount(el, store) {
 
     // cars
     hits = [];
+    const X = sessionOf(store.state), timed = X.timed;
     const nums = Object.keys(cur).sort((a, b) => (store.selected.has(a) ? 1 : 0) - (store.selected.has(b) ? 1 : 0));
     ctx.font = '600 10px ui-monospace, Menlo, Consolas, monospace'; ctx.textBaseline = 'middle';
     for (const num of nums) {
       const c = cars[num] || {}; if (c.retired) continue;
+      const act = timed ? activityOf(c).k : (c.inPit ? 'pit' : 'track');
+      const away = act === 'garage' || act === 'pit' || c.knockedOut && act !== 'track' && act !== 'out';
+      if (timed && away && opts.onTrack) continue;
       const x = SX(cur[num][0]), y = SY(cur[num][1]);
       if (x < -20 || y < -20 || x > W + 20 || y > H + 20) continue;
       const sel = store.selected.has(num), col = c.color || '#bbb';
       const r = sel ? 7.5 : 5;
-      ctx.globalAlpha = c.inPit ? 0.35 : 1;
+      const base = c.inPit || away ? (timed && away ? 0.22 : 0.35) : 1;
+      ctx.globalAlpha = base;
       if (sel) {
-        ctx.beginPath(); ctx.arc(x, y, 15, 0, 7); ctx.fillStyle = col; ctx.globalAlpha = 0.25 * (c.inPit ? .5 : 1) + 0.1 * pulse; ctx.fill();
-        ctx.globalAlpha = c.inPit ? 0.35 : 1;
+        ctx.beginPath(); ctx.arc(x, y, 15, 0, 7); ctx.fillStyle = col; ctx.globalAlpha = 0.25 * (base < 1 ? .5 : 1) + 0.1 * pulse; ctx.fill();
+        ctx.globalAlpha = base;
       }
-      ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fillStyle = col; ctx.fill();
-      ctx.lineWidth = sel ? 2 : 1; ctx.strokeStyle = sel ? '#fff' : 'rgba(0,0,0,.7)'; ctx.stroke();
+      const slow = timed && (act === 'out' || act === 'in'); // out / in laps: hollow ring
+      ctx.beginPath(); ctx.arc(x, y, slow ? r - 1 : r, 0, 7);
+      if (slow) { ctx.fillStyle = '#0d0e12'; ctx.fill(); ctx.lineWidth = 2.2; ctx.strokeStyle = col; ctx.setLineDash([3, 2]); ctx.stroke(); ctx.setLineDash([]); }
+      else { ctx.fillStyle = col; ctx.fill(); ctx.lineWidth = sel ? 2 : 1; ctx.strokeStyle = sel ? '#fff' : 'rgba(0,0,0,.7)'; ctx.stroke(); }
       if (opts.labels || sel) {
         const txt = c.tla || num;
         ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(8,9,12,.9)'; ctx.strokeText(txt, x + r + 3, y);
@@ -254,9 +273,12 @@ export function mount(el, store) {
   function updateTip() {
     const h = nearest(16);
     if (!h) { tip.hidden = true; cv.style.cursor = ''; return; }
-    const c = store.state.cars[h.num], f = store.fast[h.num] || {};
+    const c = store.state && store.state.cars[h.num]; if (!c) { tip.hidden = true; return; }
+    const f = store.fast[h.num] || {};
     const sp = f.speed != null ? f.speed : c.tel && c.tel.speed;
-    tip.innerHTML = `<b style="color:${c.color}">${c.tla}</b> ${c.name || ''}<br>P${c.pos} &middot; ${sp != null ? Math.round(sp) + ' km/h' : '-'}<br>gap ${c.gapLeader || '-'} &middot; int ${c.interval || '-'}`;
+    const X = sessionOf(store.state);
+    const l2 = X.timed ? `best ${esc((c.best && c.best.text) || '-')} &middot; gap ${esc(c.gapFastest || '-')}<br>${esc(activityOf(c).t)} &middot; ${c.timedLaps != null ? c.timedLaps + ' timed laps' : ''}` : `gap ${esc(c.gapLeader) || '-'} &middot; int ${esc(c.interval) || '-'}`;
+    tip.innerHTML = `<b style="color:${esc(c.color)}">${esc(c.tla)}</b> ${esc(c.name)}<br>P${c.pos == null ? '-' : c.pos} &middot; ${sp != null ? Math.round(sp) + ' km/h' : '-'}<br>${l2}`;
     tip.hidden = false; cv.style.cursor = 'pointer';
     const tw = tip.offsetWidth, th = tip.offsetHeight;
     tip.style.left = Math.min(W - tw - 4, Math.max(4, h.x + 14)) + 'px';
@@ -279,8 +301,10 @@ export function mount(el, store) {
   store.subscribe((k) => {
     if (k === 'track') { buildGeo(); }
     else if (k === 'fast') ingestAll(false);
-    else if (k === 'state') ingestAll(true);
+    else if (k === 'state') { ingestAll(true); prune(); }
+    else if (k === 'reset') { for (const k2 of Object.keys(anim)) delete anim[k2]; for (const k2 of Object.keys(trails)) delete trails[k2]; }
   });
+  document.addEventListener('visibilitychange', () => { last = performance.now(); });
   if (store.track) buildGeo();
   ingestAll(true);
   requestAnimationFrame(frame);

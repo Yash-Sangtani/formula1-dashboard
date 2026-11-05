@@ -1,4 +1,4 @@
-import { store, start } from './store.js';
+import { store, start, reportError } from './store.js';
 import { ls, replay, SPEEDS, h } from './util.js';
 import * as header from './panels/header.js';
 import * as tower from './panels/tower.js';
@@ -7,6 +7,8 @@ import * as racecontrol from './panels/racecontrol.js';
 import * as radio from './panels/radio.js';
 import * as layout from './panels/layout.js';
 import * as alerts from './panels/alerts.js';
+import * as status from './panels/status.js';
+import { sessionOf } from './session.js';
 
 const $ = (s) => document.querySelector(s);
 const DEFAULT_UI = { view: 'race', tower: 'auto', side: true };
@@ -35,14 +37,39 @@ const ctl = {
   },
 };
 
+// ---- panel isolation: every panel gets a store proxy whose subscribe() catches errors and shows a small badge
+const hosts = {};
+function badge(name, msg) {
+  const host = hosts[String(name).split(':')[0]]; if (!host) return;
+  const panel = host.closest('.side-sec') || host.closest('.panel') || host;
+  const bar = panel.querySelector(':scope > .ph') || panel;
+  let b = bar.querySelector(':scope > .perr');
+  if (!b) { b = h('span', { class: 'perr', title: 'click to dismiss' }, 'panel error'); b.onclick = () => b.remove(); bar.append(b); }
+  b.title = msg + ' (click to dismiss)';
+  clearTimeout(b._t); b._t = setTimeout(() => b.remove(), 30000);
+}
+window.addEventListener('f1-panel-error', (e) => badge(e.detail.name, e.detail.message));
+window.addEventListener('error', (e) => { if (e && e.message && !/ResizeObserver/.test(e.message)) badge('header', e.message); });
+window.addEventListener('unhandledrejection', (e) => badge('header', String((e.reason && e.reason.message) || e.reason)));
+function panelStore(name) {
+  return new Proxy(store, {
+    get(t, p) {
+      if (p === 'subscribe') return (fn) => t.subscribe((k) => { try { fn(k); } catch (e) { reportError(name, e); } });
+      const v = t[p]; return typeof v === 'function' ? v.bind(t) : v;
+    },
+    set(t, p, v) { t[p] = v; return true; },
+  });
+}
 function safeMount(name, mod, el, ...args) {
-  try { mod.mount(el, store, ...args); } catch (e) { console.error('mount ' + name, e); el.append(h('div', { class: 'empty' }, name + ' failed: ' + e.message)); }
+  hosts[name] = el;
+  try { mod.mount(el, panelStore(name), ...args); } catch (e) { reportError(name, e); el.append(h('div', { class: 'empty' }, name + ' failed: ' + e.message)); }
 }
 
 // ---- fixed panels
 safeMount('header', header, $('#panel-header'));
 safeMount('layout', layout, $('#toolbar .tb-views'), ctl);
 safeMount('alerts', alerts, $('#toolbar .tb-alerts'));
+safeMount('status', status, document.body);
 safeMount('tower', tower, $('#panel-tower .pb'));
 safeMount('trackmap', trackmap, $('#panel-map .pb'));
 safeMount('racecontrol', racecontrol, $('#rc-body'));
@@ -55,10 +82,10 @@ async function loadLazy(name) {
   lazy[name] = true;
   try {
     const mod = await import(`./panels/${name}.js`);
-    host.textContent = '';
-    mod.mount(host, store);
+    host.textContent = ''; hosts[name] = host;
+    mod.mount(host, panelStore(name));
   } catch (e) {
-    console.warn(name + ' unavailable', e);
+    reportError(name, e);
     host.textContent = '';
     host.append(h('div', { class: 'placeholder' }, h('b', null, ({ deepdive: 'Deep dive', analytics: 'Analytics', chasecam: '3D chase cam' })[name]), ' panel not available yet.'));
   }
@@ -110,5 +137,9 @@ store.subscribe((k) => { if (k === 'selection' || k === 'state') theme(); });
 window.addEventListener('resize', () => requestAnimationFrame(mountLazy));
 applyUi(); theme();
 
-if (new URLSearchParams(location.search).has('mock')) import('../dev/mock.js').then((m) => m.run(store));
-else start();
+const mockKind = new URLSearchParams(location.search).get('mock');
+if (mockKind != null) {
+  const k = mockKind === '1' || mockKind === '' ? 'race' : mockKind;
+  if (['fp', 'quali', 'sprint_quali'].includes(k)) import('../dev/mock-timed.js').then((m) => m.run(store, k)).catch((e) => console.error('mock', e));
+  else import('../dev/mock.js').then((m) => m.run(store, k)).catch((e) => console.error('mock', e));
+} else start();

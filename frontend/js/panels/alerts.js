@@ -1,4 +1,5 @@
 import { h, ls } from '../util.js';
+import { sessionOf } from '../session.js';
 
 // Toasts + optional beeps derived from successive state diffs.
 export function mount(el, store) {
@@ -36,17 +37,20 @@ export function mount(el, store) {
     t.onclick = () => t.remove();
   }
 
-  let prev = null;
+  let prev = null, budget = 0;
+  const T = toast; // per-state-diff cap so a big catch-up diff never floods the screen
+  const say = (...a) => { if (budget-- > 0) T(...a); };
   function onState() {
     const s = store.state; if (!s || !s.cars) return;
-    const cars = s.cars;
-    // rebaseline on seeks / first state
-    if (prev && (s.utc < prev.utc - 1 || s.utc - prev.utc > 120)) prev = null;
+    const cars = s.cars, X = sessionOf(s);
+    if (prev && (s.utc == null || prev.utc == null || s.utc < prev.utc - 1 || s.utc - prev.utc > 120)) prev = null; // seek / first state
+    budget = 4;
     const cur = {
-      utc: s.utc, flag: s.trackStatus && s.trackStatus.flag, fl: s.records && s.records.fastestLap,
-      c: {},
+      utc: s.utc, flag: s.trackStatus && s.trackStatus.flag, fl: s.records && s.records.fastestLap, status: s.session.status,
+      part: s.session.part, p1: s.order[0] && cars[s.order[0]] && cars[s.order[0]].best.text ? s.order[0] : null,
+      p1text: s.order[0] && cars[s.order[0]] ? cars[s.order[0]].best.text : '', c: {},
     };
-    for (const [n, c] of Object.entries(cars)) cur.c[n] = { pos: c.pos, pits: c.pits || 0, inPit: !!c.inPit, ret: !!c.retired };
+    for (const [n, c] of Object.entries(cars)) cur.c[n] = { pos: c.pos, pits: c.pits || 0, inPit: !!c.inPit, ret: !!c.retired, ko: !!c.knockedOut };
     if (prev) {
       if (cur.flag && cur.flag !== prev.flag) {
         const m = {
@@ -54,27 +58,38 @@ export function mount(el, store) {
           vsc: ['VIRTUAL SAFETY CAR', 'f-yellow', [600, 0.2, 2]], yellow: ['Yellow flag', 'f-yellow', [760, 0.12, 1]],
           green: ['Track clear - green flag', 'f-green', [980, 0.1, 1]],
         }[cur.flag];
-        if (m) toast(m[0], m[1], m[2]);
+        if (m) say(m[0], m[1], m[2]);
+      }
+      if (X.timed) {
+        if (/abort/i.test(cur.status || '') && !/abort/i.test(prev.status || '')) say('Session suspended (red flag)', 'f-red', [440, 0.3, 2]);
+        else if (/abort/i.test(prev.status || '') && /start/i.test(cur.status || '')) say('Session resumed', 'f-green', [980, 0.1, 1]);
+        if (X.isQuali && cur.part && prev.part && cur.part !== prev.part) say('Q' + cur.part + ' started', 'f-green', [980, 0.1, 2]);
+        // new P1 instead of overtakes
+        if (cur.p1 && prev.p1 && cur.p1 !== prev.p1 && cars[cur.p1]) say(`${cars[cur.p1].tla} takes P1 ${cur.p1text}`, 'f-purple', [1400, 0.1, 2]);
+        // eliminations
+        const ko = Object.keys(cur.c).filter((n) => cur.c[n].ko && prev.c[n] && !prev.c[n].ko);
+        if (ko.length) say('Knocked out: ' + ko.slice(0, 6).map((n) => cars[n].tla).join(', ') + (ko.length > 6 ? ' +' + (ko.length - 6) : ''), 'f-red', [300, 0.2, 1]);
       }
       for (const [n, c] of Object.entries(cur.c)) {
         const p = prev.c[n], car = cars[n]; if (!p) continue;
         const tla = car.tla || n;
-        if ((c.inPit && !p.inPit) || c.pits > p.pits && !c.inPit && !p.inPit) toast(`${tla} pits`, 'f-pit');
-        if (c.ret && !p.ret) toast(`${tla} retires`, 'f-red', [300, 0.25, 1]);
-        if (store.selected.has(n) && p.pos && c.pos && c.pos !== p.pos && !c.ret) {
+        const interesting = !X.timed || store.selected.has(n);
+        if (interesting && ((c.inPit && !p.inPit) || c.pits > p.pits && !c.inPit && !p.inPit)) say(`${tla} pits`, 'f-pit');
+        if (c.ret && !p.ret) say(`${tla} retires`, 'f-red', [300, 0.25, 1]);
+        if (!X.timed && store.selected.has(n) && p.pos && c.pos && c.pos !== p.pos && !c.ret) {
           const gained = c.pos < p.pos;
           const other = gained ? Object.entries(cur.c).find(([k, v]) => k !== n && v.pos === c.pos + 1) : Object.entries(cur.c).find(([k, v]) => k !== n && v.pos === c.pos - 1);
           const on = other && cars[other[0]] ? ' ' + (gained ? 'passing ' : 'passed by ') + cars[other[0]].tla : '';
-          toast(`${tla} P${p.pos} → P${c.pos}${on}`, gained ? 'f-green' : 'f-yellow', [1200, 0.07, 1]);
+          say(`${tla} P${p.pos} → P${c.pos}${on}`, gained ? 'f-green' : 'f-yellow', [1200, 0.07, 1]);
         }
       }
       const a = prev.fl, b = cur.fl;
-      if (b && (!a || a.num !== b.num || a.sec !== b.sec)) {
+      if (!X.timed && b && (!a || a.num !== b.num || a.sec !== b.sec)) {
         const car = cars[b.num];
-        toast(`Fastest lap ${car ? car.tla : b.num} ${b.text || ''}`, 'f-purple', [1400, 0.1, 2]);
+        say(`Fastest lap ${car ? car.tla : b.num} ${b.text || ''}`, 'f-purple', [1400, 0.1, 2]);
       }
     }
     prev = cur;
   }
-  store.subscribe((k) => { if (k === 'state') onState(); });
+  store.subscribe((k) => { if (k === 'state') onState(); else if (k === 'reset') prev = null; });
 }

@@ -23,8 +23,9 @@ export function mount(el, store) {
   }
   let sig = '';
   function render(force) {
-    const s = store.state; if (!s) return;
-    let items = s.radio || [];
+    const s = store.state;
+    if (!s) { if (sig !== 'none') { sig = 'none'; stop(); list.textContent = ''; list.append(h('div', { class: 'empty' }, 'No radio clips')); } return; }
+    let items = (s.radio || []).slice(0, 60);
     if (onlySel && store.selected.size) items = items.filter((r) => store.selected.has(String(r.num)));
     const nsig = onlySel + '|' + items.length + '|' + (items[0] ? items[0].url : '');
     if (!force && nsig === sig) return; sig = nsig;
@@ -42,6 +43,6 @@ export function mount(el, store) {
     }
     if (!items.length) list.append(h('div', { class: 'empty' }, 'No radio clips'));
   }
-  store.subscribe((k) => { if (k === 'state') render(); else if (k === 'selection') render(true); });
+  store.subscribe((k) => { if (k === 'state' || k === 'reset') render(); else if (k === 'selection') render(true); });
   render();
 }

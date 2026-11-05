@@ -3,6 +3,7 @@
 // matches the 2D track map (x to the right, y up), i.e. no mirroring.
 import * as THREE from '../../vendor/three.module.min.js';
 import { ls } from '../util.js';
+import { reportError } from '../store.js';
 
 const MODES = [
   ['chase', 'Chase', 'C', 'Behind and above the followed car'],
@@ -570,11 +571,15 @@ export function mount(host, store) {
     camera.aspect = w / Math.max(1, h); camera.updateProjectionMatrix();
   }
 
+  let errBurst = 0;
   function frame(now) {
     if (disposed) return;
     raf = requestAnimationFrame(frame);
-    const dt = Math.min(100, now - last); last = now;
+    const dt = Math.min(100, Math.max(0, now - last)); last = now;
     if (!visible()) return;
+    try { draw(now, dt); errBurst = 0; } catch (e) { if (errBurst++ < 3) reportError('chasecam', e); }
+  }
+  function draw(now, dt) {
     resize();
     const num = followed();
     if (num !== lastFollow) { lastFollow = num; tvIdx = -1; listSig = ''; }
@@ -647,6 +652,13 @@ export function mount(host, store) {
     else if (k === 'fast') ingestAll(false);
     else if (k === 'state') ingestAll(true);
     else if (k === 'selection') listSig = '';
+    else if (k === 'reset') {
+      // driver list may change: forget all car slots / labels / motion
+      for (const l of labels) if (l) { scene.remove(l); l.material.map.dispose(); l.material.dispose(); }
+      labels.length = 0; carNums.length = 0; carIdx.clear(); listSig = '';
+      for (const k2 of Object.keys(anim)) delete anim[k2];
+      if (carMesh) carMesh.count = 0;
+    }
   });
   if (!renderer) { msg.hidden = false; msg.textContent = glFail; msg.classList.add('err'); cv.hidden = true; }
 

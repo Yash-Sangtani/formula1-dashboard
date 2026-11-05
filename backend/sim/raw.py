@@ -28,6 +28,15 @@ def _iter_source(src: Any) -> Optional[Iterable[Msg]]:
     return None
 
 
+def _lines(src: Any, it: Iterable[Msg], encode: bool) -> Iterator[str]:
+    """Like :func:`raw_lines`, but a ``SimRace`` (or ``SimSource``) configured with ``snapshot_first`` starts
+    with the initial full state as CompletionMessage-style snapshot lines."""
+    race = src if hasattr(src, "snapshot_lines") else getattr(src, "race", None)
+    if race is not None and hasattr(race, "raw_lines") and getattr(race.cfg, "snapshot_first", False):
+        return race.raw_lines(encode)
+    return raw_lines(it, encode)
+
+
 def _prep_path(path: Union[str, "os.PathLike[str]"]) -> str:
     path = os.fspath(path)
     d = os.path.dirname(path)
@@ -49,7 +58,7 @@ def record_to_file(source_or_iterable: Any, path: Union[str, "os.PathLike[str]"]
         return asyncio.run(arecord_to_file(source_or_iterable, path, encode=encode, limit=limit))
     n = 0
     with open(_prep_path(path), "w", encoding="utf-8") as f:
-        for ln in raw_lines(it, encode):
+        for ln in _lines(source_or_iterable, it, encode):
             f.write(ln + "\n")
             n += 1
             if limit is not None and n >= limit:
@@ -63,7 +72,7 @@ async def arecord_to_file(source: Any, path: Union[str, "os.PathLike[str]"], *, 
     n = 0
     with open(_prep_path(path), "w", encoding="utf-8") as f:
         if it is not None:
-            for ln in raw_lines(it, encode):
+            for ln in _lines(source, it, encode):
                 f.write(ln + "\n")
                 n += 1
                 if limit is not None and n >= limit:

@@ -54,6 +54,31 @@ def parse_time(s: Any) -> Optional[float]:
     return total
 
 
+_JUNK_TEXT = frozenset(("nan", "none", "null", "inf", "-inf", "+inf", "infinity", "undefined", "n/a", "-"))
+
+
+def clean_text(v: Any) -> str:
+    """Display text for a feed value: None/NaN/junk -> '' ; floats formatted sanely."""
+    if v is None or isinstance(v, bool):
+        return ""
+    if isinstance(v, dict):
+        return clean_text(v.get("Value"))
+    if isinstance(v, float):
+        return "" if (math.isnan(v) or math.isinf(v)) else repr(v)
+    t = str(v).strip()
+    if t.lower() in _JUNK_TEXT:
+        return ""
+    return t
+
+
+def parse_laptime(s: Any) -> Optional[float]:
+    """Like parse_time but only plausible durations (0 < t < 3 h), else None."""
+    t = parse_time(s)
+    if t is None or t <= 0 or t > 10800:
+        return None
+    return t
+
+
 def parse_gap(s: Any) -> Tuple[str, Optional[float]]:
     """Return (display text, seconds|None).
 
@@ -69,12 +94,12 @@ def parse_gap(s: Any) -> Tuple[str, Optional[float]]:
         f = to_float(s)
         return ("" if f is None else "+%.3f" % f), f
     txt = str(s).strip()
-    if not txt:
+    if not txt or txt.lower() in _JUNK_TEXT:
         return "", None
     t = txt.lstrip("+")
     if _num_re.match(t):
         return txt, float(t)
-    if ":" in t:  # '1:02.345' style gaps
+    if ":" in t and not re.search(r"[A-Za-z]", t):  # '1:02.345' style gaps
         sec = parse_time(t)
         if sec is not None:
             return txt, sec

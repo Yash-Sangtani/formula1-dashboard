@@ -62,6 +62,10 @@ class SimConfig:
     tick: float = 0.25  # simulation + telemetry step (4 Hz)
     incidents: bool = True  # retirements -> safety car/VSC, minor yellows
     cars: int = 20
+    session: str = "race"  # race | sprint | fp | quali | sprint_quali
+    snapshot_first: bool = False  # raw-line output starts with CompletionMessage-style full-state lines
+    time_scale: float = 1.0  # fp / quali / sprint_quali: scales the session & part durations
+    practice: int = 1  # fp: Practice 1/2/3
 
 
 # --------------------------------------------------------------------------- formatting helpers
@@ -102,6 +106,9 @@ class SimRace:
         self.final_order: List[str] = []
         self.race_start_utc: float = 0.0
         self.end_utc: float = 0.0
+        self.prelude_events: int = 0  # number of leading events that form the initial full state
+        self.snapshot_count: int = 0  # leading messages (utc == base) making up that state
+        self.info: Dict[str, Any] = {}  # non-race sessions: {"session":..., "parts":[...]}
 
     # building
     def _finalise(self) -> None:
@@ -112,6 +119,12 @@ class SimRace:
             self.topics.append(self.events[idx][0] if kind == 0 else Z_TOPICS[kind - 1])
         self._items = []
         self.end_utc = self.times[-1] if self.times else 0.0
+        n = 0
+        for kind, idx in self._kinds:
+            if kind != 0 or idx >= self.prelude_events:
+                break
+            n += 1
+        self.snapshot_count = n
 
     # access
     def __len__(self) -> int:
@@ -157,6 +170,48 @@ class SimRace:
 
     def messages(self) -> List[Msg]:
         return list(self)
+
+    # snapshot (CompletionMessage-style) output
+    def snapshot_messages(self) -> List[Msg]:
+        """The initial full state: the leading ``snapshot_count`` messages merged to one per topic."""
+        from ..ingest.messages import deep_merge
+
+        merged: Dict[str, Any] = {}
+        for i in range(self.snapshot_count):
+            m = self.get(i)
+            if m.topic in merged:
+                deep_merge(merged[m.topic].data, m.data)
+            else:
+                merged[m.topic] = Msg(m.topic, deep_merge({}, m.data), m.utc)
+        return list(merged.values())
+
+    def snapshot_lines(self, encode: bool = True) -> List[str]:
+        """``['Topic', '<json string>', '']`` lines, as ``fastf1``'s ``_on_message`` dumps a CompletionMessage
+        (``.z`` topics carry the base64 string).  Parsed with ``parse_line`` they yield untimestamped ``Msg``."""
+        import json
+
+        from ..ingest.messages import Z_TOPICS as _Z, encode_z
+
+        out = []
+        for m in self.snapshot_messages():
+            if encode and m.topic in _Z:
+                out.append(str([m.topic + ".z", encode_z(m.data), ""]))
+            else:
+                out.append(str([m.topic, json.dumps(m.data, separators=(",", ":")), ""]))
+        return out
+
+    def raw_lines(self, encode: bool = True, snapshot_first: Optional[bool] = None) -> Iterator[str]:
+        """Recording lines for the whole session.  With ``snapshot_first`` (default: ``cfg.snapshot_first``) the
+        initial state is written as snapshot lines first, followed by every later message as a normal line."""
+        from ..ingest.messages import to_raw_line
+
+        sf = self.cfg.snapshot_first if snapshot_first is None else snapshot_first
+        start = 0
+        if sf:
+            yield from self.snapshot_lines(encode)
+            start = self.snapshot_count
+        for i in range(start, len(self)):
+            yield to_raw_line(self.get(i), encode)
 
 
 # --------------------------------------------------------------------------- simulation internals
@@ -220,7 +275,9 @@ class _Sim:
         self.track = get_track(cfg.track)
         self.L = self.track.length
         self.Ll = self.L / LOOPS
-        self.N = max(1, cfg.laps)
+        self.sprint = cfg.session == "sprint"
+        self.N = max(1, min(cfg.laps, 15) if self.sprint else cfg.laps)
+        self.clock_total = 3600 if self.sprint else 7200
         self.T0 = cfg.pre_race_s
         self.dt = cfg.tick
         self.base = cfg.base_utc
@@ -295,7 +352,9 @@ class _Sim:
 
     def _strategy(self, c: _Car) -> None:
         rng, n = self.rng, self.N
-        if n < 8:
+        if self.sprint:
+            stops = 0
+        elif n < 8:
             stops = 0
         elif n <= 30:
             stops = 1
@@ -411,7 +470,7 @@ class _Sim:
     def _clock(self, t: float) -> None:
         if self.end_t is None and not self.flag_out:
             self.emit(t, "ExtrapolatedClock", {
-                "Utc": format_ts(self.utc(t)), "Remaining": _hms(7200 - (t - self.T0)), "Extrapolating": True})
+                "Utc": format_ts(self.utc(t)), "Remaining": _hms(self.clock_total - (t - self.T0)), "Extrapolating": True})
             self.schedule(t + 300.0, self._clock)
 
     def _radio(self, t: float) -> None:
@@ -493,9 +552,9 @@ class _Sim:
                         "OfficialName": "SIMULATED FORMULA 1 GRAND PRIX", "Location": "Synthia",
                         "Country": {"Key": 0, "Code": "SIM", "Name": "Simulation"},
                         "Circuit": {"Key": 0, "ShortName": self.track.name}},
-            "ArchiveStatus": {"Status": "Generating"}, "Key": 99999, "Type": "Race", "Name": "Race",
-            "StartDate": stamp[:19], "EndDate": format_ts(bt + 2 * 3600)[:19], "GmtOffset": "00:00:00",
-            "Path": "2025/2025-03-16_Simulated_Grand_Prix/2025-03-16_Race/",
+            "ArchiveStatus": {"Status": "Generating"}, "Key": 99999, "Type": "Race", "Name": "Sprint" if self.sprint else "Race",
+            "StartDate": stamp[:19], "EndDate": format_ts(bt + self.clock_total)[:19], "GmtOffset": "00:00:00",
+            "Path": "2025/2025-03-16_Simulated_Grand_Prix/2025-03-16_%s/" % ("Sprint" if self.sprint else "Race"),
         })
         self.emit(t, "DriverList", {c.num: {
             "RacingNumber": c.num, "BroadcastName": "%s %s" % (c.first[0], c.last.upper()), "FullName": "%s %s" % (c.first, c.last.upper()),
@@ -506,7 +565,7 @@ class _Sim:
         self.emit(t, "TrackStatus", {"Status": "1", "Message": "AllClear"})
         self.emit(t, "LapCount", {"CurrentLap": 1, "TotalLaps": self.N})
         self.emit(t, "WeatherData", self._weather_data())
-        self.emit(t, "ExtrapolatedClock", {"Utc": stamp, "Remaining": "02:00:00", "Extrapolating": False})
+        self.emit(t, "ExtrapolatedClock", {"Utc": stamp, "Remaining": _hms(self.clock_total), "Extrapolating": False})
         self.emit(t, "TimingAppData", {"Lines": {c.num: {
             "RacingNumber": c.num, "Line": c.grid, "GridPos": str(c.grid),
             "Stints": {"0": {"LapFlags": 0, "Compound": c.compound, "New": "true", "TyresNotChanged": "0",
@@ -521,6 +580,7 @@ class _Sim:
     # ------------------------------------------------------------------ main loop
     def run(self) -> SimRace:
         self._prelude()
+        self.race.prelude_events = len(self.race.events)
         dt = self.dt
         T0 = self.T0
         max_t = T0 + self.N * (self.t_ref + 25.0) + 600.0
@@ -534,7 +594,7 @@ class _Sim:
             if not started and t1 > T0:
                 started = True
                 self.emit(T0, "SessionStatus", {"Status": "Started"})
-                self.emit(T0, "ExtrapolatedClock", {"Utc": format_ts(self.utc(T0)), "Remaining": "02:00:00", "Extrapolating": True})
+                self.emit(T0, "ExtrapolatedClock", {"Utc": format_ts(self.utc(T0)), "Remaining": _hms(self.clock_total), "Extrapolating": True})
                 for c in self.cars:
                     c.vmax_seg = 0.0
             self._step(t0, t1, started)
@@ -1002,7 +1062,7 @@ class _Sim:
                     self._rcm(tc, {"Category": "Flag", "Flag": "CHEQUERED", "Scope": "Track", "Message": "CHEQUERED FLAG"})
                     self.emit(tc, "SessionStatus", {"Status": "Finished"})
                     self.emit(tc, "ExtrapolatedClock", {"Utc": format_ts(self.utc(tc)),
-                                                       "Remaining": _hms(7200 - (tc - self.T0)), "Extrapolating": False})
+                                                       "Remaining": _hms(self.clock_total - (tc - self.T0)), "Extrapolating": False})
         if patch:
             self._timing(tc, c, patch)
 
@@ -1077,4 +1137,10 @@ def generate(cfg: Optional[SimConfig] = None, **kw: Any) -> SimRace:
     """Generate a full race. ``generate(seed=3, laps=10)`` is shorthand for ``generate(SimConfig(...))``."""
     if cfg is None:
         cfg = SimConfig(**kw)
+    if cfg.session in ("fp", "quali", "sprint_quali"):
+        from .sessions import generate_session
+
+        return generate_session(cfg)
+    if cfg.session not in ("race", "sprint"):
+        raise ValueError("unknown session %r (race|sprint|fp|quali|sprint_quali)" % cfg.session)
     return _Sim(cfg).run()

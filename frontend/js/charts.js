@@ -1,3 +1,4 @@
+import { reportError } from './store.js';
 // Tiny hand-drawn chart toolkit (canvas) + shared data helpers for the deep-dive / analytics panels.
 // No dependencies. Styles live in css/panels.css (.ch-*).
 
@@ -20,9 +21,9 @@ export function h(tag, cls, html) {
   if (html != null) e.innerHTML = html;
   return e;
 }
-export function rafThrottle(fn) {
+export function rafThrottle(fn, name = 'chart') {
   let id = 0;
-  const run = () => { id = 0; fn(); };
+  const run = () => { id = 0; try { fn(); } catch (e) { reportError(name, e); } };
   const t = () => { if (!id) id = requestAnimationFrame(run); };
   t.cancel = () => { if (id) cancelAnimationFrame(id); id = 0; };
   return t;

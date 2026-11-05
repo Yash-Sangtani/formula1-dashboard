@@ -52,7 +52,7 @@ export function timeClass(t) {
 }
 
 export function fmtClock(sec) {
-  if (sec == null || !isFinite(sec)) return '--:--:--';
+  if (typeof sec !== 'number' || !isFinite(sec)) return '--:--:--';
   sec = Math.max(0, Math.round(sec));
   const hh = Math.floor(sec / 3600), mm = Math.floor(sec / 60) % 60, ss = sec % 60;
   return `${hh}:${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
@@ -69,6 +69,7 @@ export function textOn(hex) {
   return (r * 299 + g * 587 + b * 114) / 1000 > 150 ? '#000' : '#fff';
 }
 export const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+export const isNum = (v) => typeof v === 'number' && isFinite(v);
 
 // Replay control state shared by header + keyboard shortcuts.
 export const SPEEDS = [1, 2, 5, 10, 20];
@@ -85,6 +86,12 @@ export const replay = {
     this.setSpeed(SPEEDS[clamp(i + dir, 0, SPEEDS.length - 1)]);
   },
   available() { return !!store.hello && store.hello.replay !== false && store.hello.mode !== 'live'; },
+  syncControl(c) {
+    if (!c) return;
+    if (typeof c.speed === 'number' && c.speed > 0) this.speed = c.speed;
+    if (typeof c.paused === 'boolean') this.paused = c.paused;
+    this._emit();
+  },
   sync(hello) {
     const i = hello && hello.info;
     if (i && typeof i.speed === 'number') this.speed = i.speed;

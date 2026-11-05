@@ -1,4 +1,5 @@
 // Race analytics panel (stage 4). export function mount(el, store)
+import { reportError } from '../store.js';
 import {
   Chart, COLORS, TYRE, esc, h, rafThrottle, isNum, fmtLap, fmtDelta, median, quantile, linreg,
   tyreColor, tyreLetter, indexHistory, teamStyles, raceBands, stintsFromLaps, heatColor,
@@ -432,9 +433,9 @@ export function mount(el, store) {
     for (const [id, v] of Object.entries(views)) v.root.classList.toggle('an-hidden-view', id !== active);
     const st = S();
     lapBadge.textContent = st && st.lap && st.lap.current ? `Lap ${st.lap.current}${st.lap.total ? '/' + st.lap.total : ''}` : '';
-    try { views[active].render(force); } catch (e) { console.error('analytics tab', active, e); }
+    try { views[active].render(force); } catch (e) { reportError('analytics:' + active, e); }
   }
-  const schedule = rafThrottle(() => render());
+  const schedule = rafThrottle(() => render(), 'analytics');
   const unsub = store.subscribe((k) => { if (k === 'state' || k === 'history' || k === 'selection') schedule(); });
   const ro = new ResizeObserver(() => schedule());
   ro.observe(el);
