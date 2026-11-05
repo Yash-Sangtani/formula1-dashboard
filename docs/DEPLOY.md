@@ -24,8 +24,16 @@ plans, a small VPS). Checklist:
   The browser then uses `wss://` automatically.
 * Put `F1_USERNAME` / `F1_PASSWORD` in the platform's secret store, not in the image or repo.
 * Mount a persistent volume at `/app/recordings` if you want to keep session recordings.
-* F1's live-timing feed is only available while a session is running; outside sessions use `F1_MODE=sim`
-  or a recording to demo.
+* F1's live-timing feed carries data only while a session is running. In `F1_MODE=live` the container simply shows
+  *waiting for session* (`/api/status` -> `phase`) and keeps reconnecting; it never exits because of an idle or broken feed.
+  To demo outside sessions use `F1_MODE=sim` or a recording.
+* Run `docker compose run --rm f1 python -m backend doctor` (after setting the credentials) before race day; `--selftest`
+  needs no network. `F1_RECORDINGS_DIR` (default `recordings` = `/app/recordings`, a volume; add it to `docker-compose.yml` `environment:` to change it) sets where raw feeds are stored; watch the
+  volume's free space (`/api/status` -> `recording.bytes`, `control.diskFreeMB`).
+* Cap concurrent browsers with `F1_MAX_CLIENTS` (default 100; also needs adding to the compose `environment:` list); `/healthz` stays open even with `DASHBOARD_TOKEN`.
+* If the container is restarted mid-session, a new recording file is started and the engine re-learns from the feed's
+  initial snapshot (the track outline comes from the official layout lookup or relearning; `POST /api/track/reset`
+  forces that).
 
 ## Caveats
 * F1 may block some datacentre IP ranges or change the unofficial feed without notice. If hosted live mode is

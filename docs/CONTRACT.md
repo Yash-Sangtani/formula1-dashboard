@@ -16,7 +16,7 @@ Also accept JSON-lines `{"topic":..., "data":..., "utc":...}`. `parse_line(line)
 
 Sources (backend/ingest/sources.py) — all implement `async def messages(self) -> AsyncIterator[Msg]`
 and a `.control` object with `speed: float`, `paused: bool`, `async seek(utc)`, `info()`:
-* `LiveSource` — wraps `fastf1.livetiming.client.SignalRClient` (writes to a file; we tail it). Needs F1 TV auth (`fastf1.livetiming` token) or `no_auth=True`; also tees raw feed to `recordings/<ts>.txt`.
+* `LiveSource` — wraps `fastf1.livetiming.client.SignalRClient` (writes to a file; we tail it). Needs F1 TV auth (`fastf1.livetiming` token) or `no_auth=True`; also tees raw feed to `<recordings-dir>/<ts>.txt`. It never gives up or raises on network/feed problems (silent feed before a session = `phase:"waiting"`); see §7.
 * `FileSource(path, speed)` — replays a recording honoring original timestamp spacing × speed.
 * `SimSource(seed, speed, laps)` — synthetic race (backend/sim) emitting the same topics/shape.
 
@@ -98,6 +98,7 @@ Server entry: `python -m backend --mode sim|file|live [--file path] [--speed 1] 
 * Extra WS frame `{"type":"control","speed":..,"paused":..}` is broadcast to all clients after any control change (clients may ignore it).
 * A seek resets the engine (track geometry is kept) and the source re-sends everything up to the target; the server then pushes state/history/track to all clients immediately.
 * Leader gap fields read `"+0.000"` / `0.0` when the feed sends an empty string; lapped cars keep their raw text (`"1L"`) with `null` seconds. Empty sector cells have `text: null, sec: null`.
+* Track extras (`source`, `corners`, `marshalSectors`, `officialRotation`), `POST /api/track/reset`, the `status` frame, `phase` and the extended `/api/status` are specified in §7.
 
 ## 6. Non-race sessions (practice / qualifying / sprint) — shapes recalled from the real feed; BE LENIENT (any field may be missing)
 Raw additions (same topics as §2):
@@ -118,3 +119,25 @@ Output additions to `state` (existing fields keep working; for non-race sessions
 * `activity`: retired > pit (or garage when in non-race and InPit for >= 60 s of feed time) > out (PitOut) > track. `trackStatus.flag` is `"red"` while `SessionStatus == Aborted`.
 * No pit-stop records/events in non-race sessions or while red-flagged; `SessionStatus` Aborted/Started-after-Aborted emit `flag` events ("RED FLAG - SESSION SUSPENDED"/"SESSION RESUMED"); a `SessionPart` change in quali emits a `flag` event "Q2". RC "TIME ... DELETED" emits a `penalty` event ("lap time deleted"). Leader gaps of the form "LAP 7" read "+0.000".
 * In/out laps appear in `history.laps` only as the feed's `NumberOfLaps` increments (pit=true, sec null if no LastLapTime arrived); the engine does not invent laps.
+
+## 7. Live-mode status, track reset and official layout (additive; all clients may ignore what they do not know)
+* **Phase.** `phase` ∈ `"waiting"` (connected / connecting, session not started or no data yet) | `"live"` | `"ended"` (session
+  finished, or replay finished) | `"error"` (cannot connect / sign in; `error` holds the reason, the server keeps retrying).
+  Present in `hello` (`{"type":"hello",...,"phase":"waiting","waiting":true,"message":"Connected - waiting for the session to start (feed shows: Bahrain GP, Practice 1)","error":null}`),
+  in `GET /api/status` (`phase`, `waiting`, `message`, `error`) and in a new WS frame sent whenever it changes:
+  `{"type":"status","phase":..,"waiting":bool,"message":str,"error":str|null,"mode":..}`. For file/sim: `waiting` until the first message, `live` while playing, `ended` when done.
+* `GET /api/status` additionally: `maxClients`, `rejectedClients`, `recording:{path,bytes,diskFreeMB}|null` (live), `track:{built,source,resets,circuitKey,year}`,
+  `applyErrors`, `taskRestarts`; `control` (live) carries `status` (starting|authenticating|connecting|connected|reconnecting|error), `connected`, `runs`, `reconnects`,
+  `authState`, `sessionStatus`, `session`, `lastFeedAgeSec`, `lastDataAgeSec`, `recordingBytes`, `diskFreeMB`.
+* **WebSocket limits.** At most `--max-clients` (default 100) viewers; an extra one receives `{"type":"error","message":"too many viewers..."}` and is closed with code 1013.
+  Browser->server messages above 4 KB are ignored. A client that cannot accept a frame for 15 s is dropped.
+* **Track reset.** `POST /api/track/reset` forgets the track and every car's `progress`; the server then pushes `{"type":"track","track":null}` (clients must clear the outline)
+  and later a normal track frame once a new outline is learned/fetched. The server also resets automatically when `SessionInfo.Meeting.Circuit.Key` changes.
+  `TrackBuilder.reset()` (backend/track.py) is the engine hook: call it when the Meeting key changes; `TrackBuilder.set_context(circuit_key, year)` does it for you when the circuit differs.
+* **Track dict extras (optional fields, absent when unknown):** `source` ("learned"|"official"), `corners:[{"n":1,"frac":0.031,"letter":""?}]` (turn numbers at their lap-fraction),
+  `marshalSectors:[frac,...]` (start fraction of each marshal sector), `officialRotation` (degrees, from the circuit data; `rotation` stays 0 - points are NOT pre-rotated).
+  Fractions are positions along `points` exactly like `progress`, `drsZones` and `sectors`. `source:"official"` tracks come from the MultiViewer circuit API
+  (`https://api.multiviewer.app/api/v1/circuits/{circuit_key}/{year}`, `x`/`y` arrays in the Position feed's coordinate system) and are only adopted when >= 80 % of the observed
+  on-track samples lie within 0.6 % of the lap length of the polyline; otherwise the track is learned from car positions as before. The lookup runs in a thread (5 s timeout),
+  only while no track exists, and fails silently.
+* `fast`/`state` are unchanged. `progress` of a car is `null` until a track exists.

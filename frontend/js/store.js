@@ -183,7 +183,7 @@ export const store = {
         }
         this.fastUtc = num(m.utc); this.emit('fast'); break;
       }
-      case 'track': this.track = normTrack(m.track) || this.track; this.emit('track'); break;
+      case 'track': this.track = m.track === null ? null : (normTrack(m.track) || this.track); this.emit('track'); break;
       case 'history': { const hh = normHistory(m); if (hh) { this.history = hh; this.emit('history'); } break; }
       case 'control': this.control = { speed: num(m.speed), paused: typeof m.paused === 'boolean' ? m.paused : undefined }; this.emit('control'); break;
       default: break;

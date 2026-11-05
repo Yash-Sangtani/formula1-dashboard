@@ -364,7 +364,7 @@ def test_session_context_parsing():
 
 
 def test_post_track_reset_clears_and_relearns_and_viewers_get_null_track():
-    src = Scripted([(0.0, loop_msgs(120, 3)), (3.0, loop_msgs(120, 3))])
+    src = Scripted([(0.0, loop_msgs(120, 3)), (6.0, loop_msgs(120, 3))])
     with TestClient(create_app(src, mode="file", frontend_dir=None, track_fallback=False)) as c:
         with c.websocket_connect("/ws") as ws:
             wait_for(lambda: c.get("/api/track").json()["track"] is not None)
@@ -385,6 +385,7 @@ def test_circuit_change_resets_track_automatically():
     src = Scripted([(0.0, [sinfo(10)] + loop_msgs(120, 3)), (2.5, [sinfo(11, mk=2)])])
     with TestClient(create_app(src, mode="file", frontend_dir=None, track_fallback=False)) as c:
         wait_for(lambda: c.get("/api/track").json()["track"] is not None)
+        wait_for(lambda: c.get("/api/status").json()["track"]["circuitKey"] == 10)
         s = c.get("/api/status").json()
         assert s["track"]["circuitKey"] == 10 and s["track"]["resets"] == 0
         wait_for(lambda: c.get("/api/status").json()["track"]["resets"] == 1, 10)

@@ -207,6 +207,7 @@ class ServerState:
         self.restart = asyncio.Event()
         self.circuit: Tuple[Any, Optional[int]] = (None, None)
         self.last_fallback_tick = 0.0
+        self.viewers_have_track = False   # some client was sent a (non-null) track; a reset must tell them to drop it
 
     @property
     def replay(self) -> bool:
@@ -398,7 +399,6 @@ async def _broadcaster(st: ServerState):
     last_rev = -1
     last_hist_rev = -1
     last_track_sig: Any = None
-    last_track_nonnull = False
     last_state_t = 0.0
     last_hist_t = 0.0
     last_status_sig: Any = None
@@ -424,9 +424,11 @@ async def _broadcaster(st: ServerState):
                 if st.clients:
                     if has_track:
                         st.broadcast("track", _safe_dumps({"type": "track", "track": eng.track_dict()}))
-                    elif last_track_nonnull:  # reset: tell viewers to drop the old outline
+                        st.viewers_have_track = True
+                    elif st.viewers_have_track:  # reset: tell viewers to drop the old outline
                         st.broadcast("track", _safe_dumps({"type": "track", "track": None}))
-                last_track_sig, last_track_nonnull = sig, has_track
+                        st.viewers_have_track = False
+                last_track_sig = sig
             if not st.clients:
                 eng.fast_delta()  # keep the dirty set from growing
                 continue
@@ -627,6 +629,7 @@ def create_app(source, *, mode: Optional[str] = None, engine: Optional[RaceEngin
             client.put("state", _safe_dumps(eng.state()))
             if eng.tb.track is not None:
                 client.put("track", _safe_dumps({"type": "track", "track": eng.track_dict()}))
+                st.viewers_have_track = True
             client.put("history", _safe_dumps(eng.history()))
         except Exception:
             log.exception("could not build the initial snapshot")
