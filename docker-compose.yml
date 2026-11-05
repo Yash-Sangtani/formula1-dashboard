@@ -1,0 +1,22 @@
+# docker compose up --build   →  http://localhost:8000
+# Race weekend:  F1_MODE=live DASHBOARD_TOKEN=choose-a-secret docker compose up -d --build
+services:
+  f1:
+    build: .
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      F1_MODE: ${F1_MODE:-sim}          # sim | live | file
+      F1_SPEED: ${F1_SPEED:-1}
+      F1_FILE: ${F1_FILE:-}             # e.g. /app/recordings/2025-03-16.txt for --mode file
+      F1_NO_AUTH: ${F1_NO_AUTH:-}       # 1 = try the feed without an F1 TV login
+      DASHBOARD_TOKEN: ${DASHBOARD_TOKEN:-}   # set this when hosting publicly
+      # F1 TV credentials for fastf1 live timing (see README "Race weekend"):
+      F1_USERNAME: ${F1_USERNAME:-}
+      F1_PASSWORD: ${F1_PASSWORD:-}
+    volumes:
+      - recordings:/app/recordings
+    restart: unless-stopped
+
+volumes:
+  recordings:

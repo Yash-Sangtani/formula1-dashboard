@@ -449,7 +449,7 @@ def _explain(exc: BaseException, no_auth: bool) -> str:
     if isinstance(exc, LiveSourceError):
         return str(exc)
     if "auth" in name.lower() or "401" in low or "403" in low or "unauthor" in low or "forbidden" in low:
-        hint = "" if no_auth else (" Set F1_USERNAME/F1_PASSWORD (F1 TV subscription) or run `python -m fastf1 auth login`,"
+        hint = "" if no_auth else (" Set F1_USERNAME/F1_PASSWORD (F1 TV subscription) or run `python -m fastf1 auth f1tv --authenticate`,"
                                    " or start with no_auth=True (--no-auth) for the unauthenticated feed.")
         return "F1 live timing rejected the connection (authentication failed: %s).%s" % (exc, hint)
     if "awsalbcors" in low:

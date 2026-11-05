@@ -10,7 +10,7 @@ The wire formats are specified in [`docs/CONTRACT.md`](docs/CONTRACT.md).
 ## Setup
 
     python -m venv .venv && source .venv/bin/activate     # Python 3.11+ (tested on 3.13)
-    pip install -r requirements.txt
+    pip install -r requirements.txt          # add requirements-dev.txt for tests
 
 ## Run
 
@@ -28,10 +28,11 @@ last message age, engine counts), `POST /api/control {speed, paused, seek}`, Web
 1. Start the server about 15 minutes before the session: `python -m backend --mode live`.
    It connects to the F1 SignalR feed through `fastf1.livetiming`, tails the stream and tees the raw
    feed to `recordings/<timestamp>.txt` so you can replay the session afterwards.
-2. Live timing needs an F1 TV subscription token. Authenticate with fastf1 first
-   (`python -m fastf1.livetiming ...` / see the fastf1 docs on live timing authentication); if the
-   token is missing or expired the connection is refused and `/api/status` shows the error.
-   `--no-auth` tries the unauthenticated endpoint, which F1 only serves intermittently.
+2. Live timing needs an F1 TV subscription. Either export `F1_USERNAME` and `F1_PASSWORD`
+   (fastf1 reads them), or sign in once with `python -m fastf1 auth f1tv --authenticate`
+   (check status with `--status`). If auth fails the connection is refused and `/api/status`
+   shows the error. `--no-auth` tries the unauthenticated endpoint, which F1 only serves
+   intermittently.
 3. The track outline is learned from car position data after the first clean lap, so the map
    appears a couple of minutes into a session. It is kept for the rest of the run.
 4. If the feed drops the server keeps serving the last state and retries with backoff.
@@ -43,9 +44,23 @@ last message age, engine counts), `POST /api/control {speed, paused, seek}`, Web
 * `--mode file` replays any recording at `--speed N`; pause, change speed and seek from the UI
   (or `POST /api/control`). Seeking resets the engine and re-feeds from the start.
 
+## 3D view
+
+The **3D** tab renders the circuit as a 3D ribbon (elevation is learned from live position data)
+with a chase camera on the selected car (or the leader). It is an approximate chase/onboard-style
+view built from position telemetry, not a true cockpit camera.
+
+## Docker / hosting
+
+    docker compose up --build                                          # sim mode on :8000
+    F1_MODE=live DASHBOARD_TOKEN=pick-a-secret F1_USERNAME=... F1_PASSWORD=... docker compose up -d --build
+
+Configuration is also available as env vars: `F1_MODE`, `F1_FILE`, `F1_SPEED`, `F1_NO_AUTH`, `PORT`,
+`HOST`, `LOG_LEVEL`, `DASHBOARD_TOKEN`. See [`docs/DEPLOY.md`](docs/DEPLOY.md).
+
 ## Tests
 
-    python -m pytest backend/tests -q
+    python -m pytest -q
 
 ## Layout
 

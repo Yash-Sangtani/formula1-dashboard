@@ -1,0 +1,8 @@
+.git
+.fastf1_cache
+recordings
+**/__pycache__
+.pytest_cache
+app.py
+docs
+node_modules

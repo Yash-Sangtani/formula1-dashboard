@@ -3,5 +3,3 @@ fastapi
 uvicorn[standard]
 websockets
 numpy
-pytest
-httpx

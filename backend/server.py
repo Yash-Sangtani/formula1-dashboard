@@ -334,6 +334,10 @@ def create_app(source, *, mode: Optional[str] = None, engine: Optional[RaceEngin
     async def api_track():
         return json_resp({"type": "track", "track": eng.track_dict()})
 
+    @app.get("/healthz")
+    async def healthz():
+        return json_resp({"ok": True})
+
     @app.get("/api/status")
     async def api_status():
         age = None if st.last_msg_mono is None else round(time.monotonic() - st.last_msg_mono, 2)
