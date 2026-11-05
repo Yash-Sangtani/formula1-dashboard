@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Chasecam harness</title>
+<link rel="stylesheet" href="../css/style.css"><link rel="stylesheet" href="../css/chasecam.css">
+<style>html,body{height:100%;margin:0}#host{position:absolute;inset:0}</style></head>
+<body data-view="chase"><div id="host"></div>
+<script type="module">
+  // ?mock uses dev/mock.js data; default connects to a running backend (python -m backend --mode sim).
+  import { store, start } from '../js/store.js';
+  import { mount } from '../js/panels/chasecam.js';
+  mount(document.getElementById('host'), store);
+  if (new URLSearchParams(location.search).has('mock')) import('./mock.js').then((m) => m.run(store)); else start();
+</script></body></html>

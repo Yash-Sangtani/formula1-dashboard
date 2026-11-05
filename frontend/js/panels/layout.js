@@ -1,6 +1,6 @@
 import { h, ls } from '../util.js';
 
-export const VIEWS = [['race', 'Race', '1'], ['deep', 'Deep dive', '2'], ['analytics', 'Analytics', '3'], ['all', 'All', '4']];
+export const VIEWS = [['race', 'Race', '1'], ['deep', 'Deep dive', '2'], ['analytics', 'Analytics', '3'], ['all', 'All', '4'], ['chase', '3D', '5']];
 const KEY = 'f1.layouts';
 
 // ctl: {ui, set(patch), onChange(fn), reset()}

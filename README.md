@@ -44,7 +44,7 @@ last message age, engine counts), `POST /api/control {speed, paused, seek}`, Web
 * `--mode file` replays any recording at `--speed N`; pause, change speed and seek from the UI
   (or `POST /api/control`). Seeking resets the engine and re-feeds from the start.
 
-## 3D view
+## 3D view (key 5)
 
 The **3D** tab renders the circuit as a 3D ribbon (elevation is learned from live position data)
 with a chase camera on the selected car (or the leader). It is an approximate chase/onboard-style

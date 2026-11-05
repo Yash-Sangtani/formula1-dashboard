@@ -49,7 +49,7 @@ safeMount('racecontrol', racecontrol, $('#rc-body'));
 safeMount('radio', radio, $('#radio-body'));
 
 // ---- lazily loaded panels owned by another module
-const lazy = { deepdive: false, analytics: false };
+const lazy = { deepdive: false, analytics: false, chasecam: false };
 async function loadLazy(name) {
   const host = $(`#panel-${name} .pb`);
   lazy[name] = true;
@@ -60,7 +60,7 @@ async function loadLazy(name) {
   } catch (e) {
     console.warn(name + ' unavailable', e);
     host.textContent = '';
-    host.append(h('div', { class: 'placeholder' }, h('b', null, name === 'deepdive' ? 'Deep dive' : 'Analytics'), ' panel not available yet.'));
+    host.append(h('div', { class: 'placeholder' }, h('b', null, ({ deepdive: 'Deep dive', analytics: 'Analytics', chasecam: '3D chase cam' })[name]), ' panel not available yet.'));
   }
 }
 function visible(el) { return el.offsetWidth > 0 && el.offsetHeight > 0; }
@@ -79,7 +79,8 @@ function theme() {
 function help() {
   let o = $('#help');
   if (o) { o.remove(); return; }
-  const rows = [['1 2 3 4', 'Race / Deep dive / Analytics / All'], ['j / k', 'Select next / previous car'], ['Space', 'Pause / resume replay'],
+  const rows = [['1 2 3 4 5', 'Race / Deep dive / Analytics / All / 3D'],
+    ['C O T H R / I', '3D view: camera modes / HUD'], ['j / k', 'Select next / previous car'], ['Space', 'Pause / resume replay'],
     ['+ / -', 'Replay speed up / down'], ['F', 'Big-screen fullscreen'], ['Esc', 'Clear selection / close'], ['?', 'This help'],
     ['Click', 'Select car (Shift/Ctrl adds)']];
   o = h('div', { id: 'help', onclick: () => o.remove() }, h('div', { class: 'help-card' }, h('h3', null, 'Keyboard shortcuts'),
@@ -90,8 +91,8 @@ document.addEventListener('keydown', (e) => {
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   const t = e.target; if (t && /INPUT|TEXTAREA|SELECT/.test(t.tagName) && t.type !== 'checkbox') return;
   const k = e.key;
-  const views = ['race', 'deep', 'analytics', 'all'];
-  if (k >= '1' && k <= '4') ctl.set({ ...ui, view: views[+k - 1] });
+  const views = ['race', 'deep', 'analytics', 'all', 'chase'];
+  if (k >= '1' && k <= '5') ctl.set({ ...ui, view: views[+k - 1] });
   else if (k === 'j' || k === 'k') {
     const order = (store.state && store.state.order) || []; if (!order.length) return;
     const cur = order.indexOf([...store.selected][0]);
