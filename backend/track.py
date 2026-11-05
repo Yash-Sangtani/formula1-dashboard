@@ -35,6 +35,27 @@ class Track:
         mn = self.pts.min(axis=0)
         mx = self.pts.max(axis=0)
         self.bounds = [float(mn[0]), float(mn[1]), float(mx[0]), float(mx[1])]
+        # Elevation learned from live Position Z samples (running mean per point).
+        self._z_sum = np.zeros(self.n)
+        self._z_cnt = np.zeros(self.n)
+
+    def add_z(self, progress: float, z: float) -> None:
+        """Accumulate an elevation sample (raw Position.Z units) at lap progress 0..1."""
+        i = int(progress * self.n) % self.n
+        self._z_sum[i] += z
+        self._z_cnt[i] += 1
+
+    def elevation(self) -> Optional[List[float]]:
+        """Smoothed elevation per point in metres relative to the lowest point; None until sampled."""
+        have = self._z_cnt > 0
+        if have.sum() < max(10, self.n // 10):
+            return None
+        idx = np.arange(self.n)
+        z = np.interp(idx, idx[have], (self._z_sum[have] / self._z_cnt[have]), period=self.n)
+        k = np.ones(15) / 15
+        pad = np.concatenate([z[-15:], z, z[:15]])
+        z = np.convolve(pad, k, mode="same")[15:-15]
+        return [round(float(v) / 10.0, 2) for v in (z - z.min())]
 
     def project(self, x: float, y: float, hint: Optional[int] = None, window: int = 40) -> Tuple[float, int, float]:
         """Return (progress 0..1, segment index, distance). `hint` = previous segment idx for a local search."""
@@ -72,6 +93,7 @@ class Track:
             "drsZones": [[round(a, 4), round(b, 4)] for a, b in self.drs_zones],
             "sectors": [round(v, 4) for v in self.sectors],
             "rotation": 0,
+            "elevation": self.elevation(),
         }
 
 
@@ -229,6 +251,16 @@ class TrackBuilder:
         if self.track is None:
             return None
         return self.track.project(x, y, hint)
+
+    def add_z(self, progress: float, z: float) -> None:
+        """Feed an elevation sample; bumps `version` when the elevation profile first
+        becomes available and again as it is refined, so clients get an updated track."""
+        if self.track is None:
+            return
+        self.track.add_z(progress, z)
+        self._z_n = getattr(self, "_z_n", 0) + 1
+        if self._z_n in (1500, 15000, 150000):
+            self.version += 1
 
     # ---- DRS zones / sectors ------------------------------------------
     def add_drs(self, progress: float, is_open: bool) -> None:

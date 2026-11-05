@@ -643,6 +643,8 @@ class RaceEngine:
         prog, idx, _ = self.tb.track.project(d.xy["x"], d.xy["y"], d.hint)
         d.hint = idx
         d.progress = round(prog, 4)
+        if d.xy.get("status") == "OnTrack" and not d.in_pit and not d.pit_out:
+            self.tb.add_z(prog, d.xy.get("z") or 0.0)
 
     # -- race control ------------------------------------------------------
     def _h_rc(self, data):
