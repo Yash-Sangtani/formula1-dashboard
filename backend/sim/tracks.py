@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Sequence, Tuple
 
 STEP_M = 10.0  # polyline spacing
-A_LAT = 36.0  # m/s^2 lateral grip used for the reference speed profile
+A_LAT = 27.0  # m/s^2 lateral grip used for the reference speed profile
 A_ACC = 7.5  # m/s^2 reference acceleration
 A_BRK = 35.0  # m/s^2 reference braking
 V_MAX = 85.0  # m/s (306 km/h)
@@ -202,10 +202,11 @@ def _build(name: str, spec: dict) -> Track:
     target = spec["length_m"]
     # scale to the target length, resample finely, smooth (rounds off over-sharp corners), then resample
     # to the final spacing and rescale the chord length exactly
-    xs, ys, zs, total = _resample(raw_x, raw_y, raw_z, 1.0)
-    sc = target / total
-    xs = _smooth([x * sc for x in xs], 20, 3) if False else [x * sc for x in xs]
-    ys = [y * sc for y in ys]
+    chord0 = sum(math.hypot(raw_x[(i + 1) % npts] - raw_x[i], raw_y[(i + 1) % npts] - raw_y[i]) for i in range(npts))
+    sc = target / chord0
+    xs = [x * sc for x in raw_x]
+    ys = [y * sc for y in raw_y]
+    zs = raw_z
     xs, ys, zs, total = _resample(xs, ys, zs, 4.0)
     xs = _smooth(xs, 5, 3)
     ys = _smooth(ys, 5, 3)
@@ -241,14 +242,14 @@ def _build(name: str, spec: dict) -> Track:
     cand = sorted(range(n), key=lambda i: -curv[i])
     corners: List[int] = []
     for i in cand:
-        if curv[i] < 1 / 220.0:
+        if curv[i] < 1 / 170.0:
             break
         if all(min((i - j) % n, (j - i) % n) * step >= 120.0 for j in corners):
             corners.append(i)
     corners.sort()
     # DRS zones: the two longest runs near top speed
     runs: List[Tuple[int, int]] = []
-    thr = 0.9 * max(v)
+    thr = 0.88 * max(v)
     i = 0
     seen = 0
     # start scanning at a point that is not inside a run
@@ -265,7 +266,7 @@ def _build(name: str, spec: dict) -> Track:
             seen = k
         else:
             seen += 1
-    runs = [r for r in runs if r[1] * step >= 350.0]
+    runs = [r for r in runs if r[1] * step >= 250.0]
     runs.sort(key=lambda r: -r[1])
     drs = sorted((r[0] / n, ((r[0] + r[1]) % n) / n) for r in runs[:2])
     return Track(
