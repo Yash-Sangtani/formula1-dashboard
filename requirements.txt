@@ -1,4 +1,4 @@
-fastf1
+fastf1>=3.9.2
 fastapi
 uvicorn[standard]
 websockets
