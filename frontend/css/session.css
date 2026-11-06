@@ -1,0 +1,87 @@
+/* Session-aware additions (practice / qualifying), connection banner, panel-error badge. */
+.flag-wait { background: #1c2230; color: #9fb4d8; border: 1px solid #34405a; }
+.hd-conn .age { margin-left: 4px; }
+.hd-conn .age.idle { color: var(--mut); }
+.hd-part b { color: var(--yellow); }
+.hd-box[hidden] { display: none !important; }
+body[data-kind=practice] .hd-meeting::after, body[data-kind=qualifying] .hd-meeting::after { content: none; }
+
+/* connection banner */
+#conn-banner { position: fixed; left: 50%; top: 8px; transform: translateX(-50%); z-index: 150; background: #3a1010; color: #ffb4b4; border: 1px solid #7a2020; border-radius: 6px;
+  padding: 6px 16px; font-weight: 700; font-size: .85rem; box-shadow: 0 6px 24px #000a; max-width: calc(100vw - 24px); text-align: center; }
+#conn-banner.connecting { background: #2f2a10; color: #ffe27a; border-color: #6b5c1a; }
+#conn-banner[hidden] { display: none; }
+
+/* panel error badge */
+.ph { position: relative; }
+.perr { float: right; background: #5a1010; color: #ffb4b4; border-radius: 3px; padding: 0 6px; font: 700 .62rem var(--sans); letter-spacing: .04em; cursor: pointer; text-transform: none; }
+
+/* timing tower, practice / qualifying */
+[data-kind=practice] #grid, [data-kind=qualifying] #grid, [data-kind=sprint_qualifying] #grid { --twid: clamp(560px, 40vw, 700px); }
+[data-kind=qualifying] #grid, [data-kind=sprint_qualifying] #grid { --twid: clamp(660px, 46vw, 800px); }
+[data-kind=practice][data-view=race] #grid, [data-kind=qualifying][data-view=race] #grid, [data-kind=sprint_qualifying][data-view=race] #grid { grid-template-columns: var(--twid) minmax(0, 1fr) clamp(280px, 20vw, 360px); }
+[data-kind=practice][data-view=race].noside #grid, [data-kind=qualifying][data-view=race].noside #grid, [data-kind=sprint_qualifying][data-view=race].noside #grid { grid-template-columns: var(--twid) minmax(0, 1fr); }
+.tower.tm-timed .row { grid-template-columns: 26px 4px 44px 78px 66px 140px 60px 34px 64px; }
+.tower.tm-quali .row { grid-template-columns: 26px 4px 44px 78px 66px 182px 140px 60px 34px 64px; }
+.tower.tm-timed .c-best { display: block; text-align: right; font-weight: 700; } .tower.tm-timed .c-best.t-none { font-weight: 400; }
+.tower.tm-timed .c-best.t-purple { color: var(--purple); }
+.tower.tm-timed .c-gap { display: block; } .tower.tm-timed .c-sec { display: grid; } .tower.tm-timed .c-q { display: grid; } .tower.tm-timed .c-tyre { display: flex; } .tower.tm-timed .c-laps, .tower.tm-timed .c-act { display: block; }
+.tower.tm-timed .c-gap.lead { color: var(--purple); font-size: .72rem; font-weight: 700; }
+.tower.tm-timed .c-sec { font-size: .7rem; }
+.tower.tm-timed .c-laps { text-align: center; color: var(--mut); font-size: .8rem; }
+.c-q { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; text-align: center; font-size: .7rem; }
+.c-q i { font-style: normal; border-radius: 3px; padding: 1px 0; background: #1b1e26; color: var(--text); overflow: hidden; }
+.c-q i.na { color: var(--dim); } .c-q i.cur { background: rgba(255,212,0,.14); }
+.head .c-q i { background: none; color: inherit; }
+.c-act { font: 700 .58rem var(--sans); letter-spacing: .04em; text-align: center; }
+.c-act[class*=act-]:not(:empty) { border-radius: 3px; padding: 2px 3px; }
+.act-track { background: rgba(31,224,122,.14); color: var(--green); }
+.act-out { background: var(--blue); color: #fff; } .act-in { background: #7a5a00; color: #ffe27a; }
+.act-pit { background: var(--yellow); color: #000; } .act-garage { background: #232733; color: var(--mut); } .act-ret { background: #3a1010; color: #ff6b6b; }
+.tower .row.garage { opacity: .5; } .tower .row.notime { opacity: .55; }
+.tower .row.ko { opacity: .38; } .tower .row.ko .c-tla { text-decoration: line-through; text-decoration-thickness: 1px; }
+.tower .row.danger { box-shadow: inset 3px 0 0 var(--red); background: rgba(225,6,0,.12); }
+.tower .tw-body .row.danger.sel { background: color-mix(in srgb, var(--tc, var(--team)) 22%, #2a1215); }
+.cut-line { position: absolute; left: 0; right: 0; top: 0; height: 2px; background: var(--red); z-index: 2; pointer-events: none; transition: transform .45s cubic-bezier(.3,.8,.3,1); box-shadow: 0 0 6px var(--red); }
+.cut-line.ko { background: #777; box-shadow: none; }
+.cut-line span { position: absolute; left: 2px; top: 1px; font: 800 .5rem/1.3 var(--sans); letter-spacing: .1em; background: var(--red); color: #fff; padding: 0 5px; border-radius: 2px; }
+.cut-line.ko span { background: #555; }
+.cut-line[hidden] { display: none; }
+@container (max-width: 700px) {
+  .tower.tm-quali .row { grid-template-columns: 26px 4px 44px 78px 66px 140px 60px 34px 64px; }
+  .tower.tm-quali .c-q { display: none; }
+}
+@container (max-width: 560px) {
+  .tower.tm-timed .row, .tower.tm-quali .row { grid-template-columns: 24px 4px 42px 76px 62px 60px 34px 62px; }
+  .tower.tm-timed .c-sec { display: none; }
+}
+@container (max-width: 470px) {
+  .tower.tm-timed .row, .tower.tm-quali .row { grid-template-columns: 24px 4px 40px 1fr 62px 60px; }
+  .tower.tm-timed .c-tyre, .tower.tm-timed .c-laps { display: none; }
+}
+
+/* map: on-track toggle button state */
+.map-opts button.on { background: var(--team); border-color: var(--team); }
+
+/* generic */
+.na-note { padding: 24px; text-align: center; color: var(--mut); line-height: 1.5; }
+.na-note b { color: var(--text); display: block; margin-bottom: 4px; font-size: 1.05em; }
+.rc-more, .ev-more { padding: 6px 10px; text-align: center; color: var(--mut); font-size: .75rem; }
+
+/* deep dive, timed sessions */
+.dd-lapflag { font: 700 .62rem var(--sans); border-radius: 3px; padding: 1px 5px; }
+.dd-lapflag.out { background: #1c3a6e; color: #9cc3ff; } .dd-lapflag.in { background: #5a4500; color: #ffe27a; }
+.dd-lapl tr.dd-sl td, .dd-lapl tr.dd-sl th { opacity: .7; }
+.dd-laplist { max-height: 300px; overflow: auto; }
+.dd-qs { font-size: .8rem !important; letter-spacing: 0; }
+
+/* analytics, timed sessions */
+.an-na[hidden] { display: none !important; }
+.an-na { display: block; padding: 40px 20px; text-align: center; line-height: 1.6; }
+.an-na b { display: block; font-size: 1.1em; margin-bottom: 6px; }
+.an-tab.an-na-tab { opacity: .45; }
+.an-tbl tr.an-ko { opacity: .5; }
+
+.tower .head .c-laps { font-size: inherit; color: inherit; }
+.an > *, .dd > * { flex-shrink: 0; }
+.tower .tw-empty { position: absolute; left: 0; right: 0; top: 60px; }

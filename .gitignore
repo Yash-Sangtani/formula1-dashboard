@@ -3,3 +3,6 @@ __pycache__/
 *.pyo
 .fastf1_cache/
 .env
+recordings/
+node_modules/
+.pytest_cache/
